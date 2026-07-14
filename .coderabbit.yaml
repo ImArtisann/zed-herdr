@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+early_access: false
+
+reviews:
+    profile: chill
+    request_changes_workflow: false
+    high_level_summary: true
+    poem: true
+    review_status: true
+    review_details: false
+
+    path_filters:
+        - "!**/node_modules/**"
+        - "!**/.turbo/**"
+        - "!**/.alchemy/**"
+        - "!**/.idea/**"
+        - "!**/.husky/_/**"
+        - "!**/.agents/**"
+        - "!**/.omp/**"
+        - "!**/.claude/**"
+        - "!**/dist/**"
+        - "!**/ios/**"
+        - "!**/android/**"
+        - "!**/generated/**"
+        - "!**/_generated/**"
+        - "!**/__generated__/**"
+        - "!**/*.lock"
+        - "!**/bun.lock"
+        - "!**/bun.lockb"
+        - "!**/skills-lock.json"
+
+    auto_review:
+        enabled: true
+        base_branches:
+            - ".*"
+        drafts: true
+        auto_pause_after_reviewed_commits: 0

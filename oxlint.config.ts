@@ -1,0 +1,32 @@
+import { defineConfig } from "oxlint";
+
+export default defineConfig({
+    ignorePatterns: [
+        "node_modules/**",
+        "dist/**",
+        "lib/**",
+        ".tmp/**",
+        ".turbo/**",
+        "out-tsc/**",
+        ".alchemy/**",
+        ".wrangler/**",
+        ".dev.vars",
+        ".env",
+        ".env.local",
+        "bun.lock",
+        ".expo/**",
+        ".expo-shared/**",
+        "web-build/**",
+        "android/**",
+        "ios/**",
+        "apps/*/dist/**",
+        "apps/*/lib/**",
+        "apps/*/.expo/**",
+        "apps/*/.alchemy/**",
+        "apps/*/.agents/**",
+        "apps/*/.wrangler/**",
+        "apps/*/android/**",
+        "apps/*/ios/**",
+        "packages/*/.agents/**",
+    ],
+});
