@@ -358,6 +358,18 @@ test("uses owner-only mode and rejects invalid or oversized frames", async () =>
         expect(await rawRequest(path, [new Uint8Array([0xff, 0x0a])])).toBe(
             '{"ok":false,"error":"invalid_request"}',
         );
+        const validRequest = new TextEncoder().encode(
+            `${JSON.stringify({
+                type: "notify",
+                notification: { workspaceId: "workspace", cwd: "/repo" },
+            })}\n`,
+        );
+        const requestWithBufferedUtf8Suffix = new Uint8Array(validRequest.byteLength + 1);
+        requestWithBufferedUtf8Suffix.set(validRequest);
+        requestWithBufferedUtf8Suffix[validRequest.byteLength] = 0xf0;
+        expect(await rawRequest(path, [requestWithBufferedUtf8Suffix])).toBe(
+            '{"ok":false,"error":"invalid_request"}',
+        );
         expect(await rawRequest(path, ["x".repeat(CONTROL_SOCKET_MAX_BYTES + 1), "\n"])).toBe(
             '{"ok":false,"error":"payload_too_large"}',
         );
@@ -614,6 +626,33 @@ test("rejects response bytes written after a completed response frame", async ()
 
     try {
         await expect(healthControl(path)).rejects.toBeInstanceOf(ControlProtocolError);
+    } finally {
+        listener.stop(true);
+        await rm(directory, { force: true, recursive: true });
+    }
+});
+
+test("rejects an incomplete UTF-8 suffix after a completed response frame", async () => {
+    const directory = await makeTemporaryDirectory();
+    const path = `${directory}/buffered-utf8-response.sock`;
+    const response = new TextEncoder().encode('{"ok":false,"error":"invalid_request"}\n');
+    const responseWithBufferedUtf8Suffix = new Uint8Array(response.byteLength + 1);
+    responseWithBufferedUtf8Suffix.set(response);
+    responseWithBufferedUtf8Suffix[response.byteLength] = 0xf0;
+    const listener = Bun.listen({
+        unix: path,
+        socket: {
+            data(socket) {
+                socket.end(responseWithBufferedUtf8Suffix);
+            },
+        },
+    });
+
+    try {
+        await expect(healthControl(path)).rejects.toMatchObject({
+            _tag: "ControlProtocolError",
+            detail: "trailing response bytes",
+        } satisfies Partial<ControlProtocolError>);
     } finally {
         listener.stop(true);
         await rm(directory, { force: true, recursive: true });

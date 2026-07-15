@@ -427,6 +427,7 @@ type ConnectionState = {
     bytes: number;
     completed: boolean;
     decoder: TextDecoder;
+    newlineSeen: boolean;
     scheduled: boolean;
 };
 
@@ -516,6 +517,7 @@ export const startControlServer = async (
                         socket.data = {
                             buffer: "",
                             bytes: 0,
+                            newlineSeen: false,
                             completed: false,
                             decoder: new TextDecoder("utf-8", { fatal: true }),
                             scheduled: false,
@@ -526,6 +528,18 @@ export const startControlServer = async (
                             return;
                         }
                         socket.data.bytes += chunk.byteLength;
+                        const newlineByte = chunk.indexOf(0x0a);
+                        if (
+                            socket.data.newlineSeen ||
+                            (newlineByte >= 0 && newlineByte < chunk.byteLength - 1)
+                        ) {
+                            socket.data.completed = true;
+                            writeAndClose(socket, { ok: false, error: "invalid_request" });
+                            return;
+                        }
+                        if (newlineByte >= 0) {
+                            socket.data.newlineSeen = true;
+                        }
                         try {
                             socket.data.buffer += socket.data.decoder.decode(chunk, {
                                 stream: true,
@@ -712,6 +726,7 @@ const requestControl = async (
         let buffer = "";
         let bytes = 0;
         const decoder = new TextDecoder("utf-8", { fatal: true });
+        let responseNewlineSeen = false;
         const finish = (result: () => void): void => {
             if (settled) {
                 return;
@@ -799,6 +814,22 @@ const requestControl = async (
                         return;
                     }
                     bytes += chunk.byteLength;
+                    const newlineByte = chunk.indexOf(0x0a);
+                    if (
+                        responseNewlineSeen ||
+                        (newlineByte >= 0 && newlineByte < chunk.byteLength - 1)
+                    ) {
+                        finish(() =>
+                            rejectResponse(
+                                new ControlProtocolError(path, "trailing response bytes"),
+                            ),
+                        );
+                        client.terminate();
+                        return;
+                    }
+                    if (newlineByte >= 0) {
+                        responseNewlineSeen = true;
+                    }
                     try {
                         buffer += decoder.decode(chunk, { stream: true });
                     } catch {
