@@ -241,7 +241,7 @@ export const makeSyncDaemon = Effect.gen(function* () {
                     continue;
                 }
 
-                yield* Ref.modify(cache, (state) => {
+                const recorded = yield* Ref.modify(cache, (state) => {
                     if (state.latestLiveGeneration !== trigger.generation) {
                         return [false, state] as const;
                     }
@@ -256,13 +256,15 @@ export const makeSyncDaemon = Effect.gen(function* () {
                         },
                     ] as const;
                 });
-                yield* logSync("info", "workspace_sync_succeeded", {
-                    workspaceId: project.workspaceId,
-                    workspace: project.name,
-                    path: project.gitRoot,
-                    operation: "ensure_project",
-                    elapsedMs: elapsedMillis(trigger.ingressAt, now),
-                });
+                if (recorded) {
+                    yield* logSync("info", "workspace_sync_succeeded", {
+                        workspaceId: project.workspaceId,
+                        workspace: project.name,
+                        path: project.gitRoot,
+                        operation: "ensure_project",
+                        elapsedMs: elapsedMillis(trigger.ingressAt, now),
+                    });
+                }
             }
 
             const focusedId = snapshot.focusedWorkspaceId;
@@ -407,10 +409,17 @@ export const makeSyncDaemon = Effect.gen(function* () {
                 cancelled = yield* Deferred.make<void>();
                 cancellations.set(event.generation, cancelled);
             }
-            yield* Ref.update(cache, (state) => ({
-                ...state,
-                latestLiveGeneration: event.generation,
-            }));
+            yield* Ref.update(cache, (state) => {
+                const generationChanged = state.latestLiveGeneration !== event.generation;
+                return {
+                    ...state,
+                    latestLiveGeneration: event.generation,
+                    ensuredGitRoots: generationChanged
+                        ? new Set<string>()
+                        : state.ensuredGitRoots,
+                    lastSuccessful: generationChanged ? null : state.lastSuccessful,
+                };
+            });
             yield* Queue.offer(triggers, {
                 generation: event.generation,
                 ingressAt: yield* Clock.currentTimeNanos,

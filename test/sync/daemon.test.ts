@@ -699,11 +699,25 @@ test("stale ensure completion cannot record a root or synchronization time", asy
                     Effect.zipRight(Queue.takeAll(harness.logEvents)),
                     Effect.zipRight(Deferred.succeed(gate, undefined)),
                     Effect.zipRight(Deferred.await(ensureCompleted)),
-                    Effect.zipRight(Queue.take(harness.logEvents)),
-                    Effect.tap((log) =>
+                    Effect.zipRight(
                         Effect.sync(() => {
-                            expect(log.message).toBe("workspace_sync_succeeded");
-                            expect(log.annotations.operation).toBe("ensure_project");
+                            queueSnapshot(harness, 2, snapshot(null, []));
+                        }),
+                    ),
+                    Effect.zipRight(emitInvalidated(harness, 2)),
+                    Effect.zipRight(advanceDebounce),
+                    Effect.zipRight(awaitSnapshot(harness)),
+                    Effect.zipRight(Queue.takeAll(harness.logEvents)),
+                    Effect.tap((logs) =>
+                        Effect.sync(() => {
+                            expect(logs).not.toContainEqual(
+                                expect.objectContaining({
+                                    message: "workspace_sync_succeeded",
+                                    annotations: expect.objectContaining({
+                                        operation: "ensure_project",
+                                    }),
+                                }),
+                            );
                         }),
                     ),
                     Effect.zipRight(Ref.get(harness.daemon.cache)),
@@ -722,6 +736,43 @@ test("stale ensure completion cannot record a root or synchronization time", asy
                     ),
             },
         );
+    });
+});
+
+test("repeats ensure and focus for a reused root after a generation change", async () => {
+    await withTemporaryDirectory(async (directory) => {
+        const repo = join(directory, "repo");
+        await initializeRepository(repo);
+        await withDaemon((harness) => {
+            queueSnapshot(harness, 1, snapshot("workspace", [workspace("workspace", repo)]));
+            queueSnapshot(harness, 2, snapshot("workspace", [workspace("workspace", repo)]));
+            return emitInvalidated(harness, 1).pipe(
+                Effect.zipRight(advanceDebounce),
+                Effect.zipRight(awaitSnapshot(harness)),
+                Effect.zipRight(awaitCalls(harness, 2)),
+                Effect.zipRight(emitDisconnected(harness, 1)),
+                Effect.zipRight(emitInvalidated(harness, 2)),
+                Effect.zipRight(advanceDebounce),
+                Effect.zipRight(awaitSnapshot(harness)),
+                Effect.zipRight(awaitCalls(harness, 2)),
+                Effect.zipRight(Ref.get(harness.daemon.cache)),
+                Effect.tap((cache) =>
+                    Effect.sync(() => {
+                        expect(harness.calls).toEqual([
+                            `ensure:${repo}`,
+                            `focus:${repo}`,
+                            `ensure:${repo}`,
+                            `focus:${repo}`,
+                        ]);
+                        expect([...cache.ensuredGitRoots]).toEqual([repo]);
+                        expect(cache.lastSuccessful).toEqual({
+                            workspaceId: workspaceId("workspace"),
+                            gitRoot: repo,
+                        });
+                    }),
+                ),
+            );
+        });
     });
 });
 
