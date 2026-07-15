@@ -278,8 +278,9 @@ const initializeRepository = async (directory: string): Promise<void> => {
 
 test("does not snapshot or call the editor before a live invalidation", async () => {
     await withDaemon((harness) =>
-        settle.pipe(
-            Effect.tap(() =>
+        TestClock.adjust("51 millis").pipe(
+            Effect.zipRight(settle),
+            Effect.zipRight(
                 Effect.sync(() => {
                     expect(harness.snapshotCalls).toEqual([]);
                     expect(harness.calls).toEqual([]);
@@ -478,7 +479,7 @@ test("replaces cache state with each authoritative snapshot and prunes absent id
                 Effect.zipRight(emitInvalidated(harness, 1)),
                 Effect.zipRight(advanceDebounce),
                 Effect.zipRight(awaitSnapshot(harness)),
-                Effect.zipRight(awaitCalls(harness, 1)),
+                Effect.zipRight(awaitCalls(harness, 2)),
                 Effect.zipRight(Ref.get(harness.daemon.cache)),
                 Effect.tap((cache) =>
                     Effect.sync(() => {
@@ -556,6 +557,7 @@ test("deduplicates roots and retries a failed focus without caching the failure"
 
 test("keeps linked worktree roots independent", async () => {
     await withTemporaryDirectory(async (directory) => {
+
         const main = join(directory, "main");
         const linked = join(directory, "linked");
         await initializeRepository(main);
@@ -584,6 +586,142 @@ test("keeps linked worktree roots independent", async () => {
                 ),
             );
         });
+    });
+});
+
+test("retries a failed ensure and records its root only after it succeeds", async () => {
+    await withTemporaryDirectory(async (directory) => {
+        const repo = join(directory, "repo");
+        await initializeRepository(repo);
+        let attempts = 0;
+        await withDaemon(
+            (harness) => {
+                queueSnapshot(harness, 1, snapshot(null, [workspace("a", repo)]));
+                queueSnapshot(harness, 1, snapshot(null, [workspace("a", repo)]));
+                return emitInvalidated(harness, 1).pipe(
+                    Effect.zipRight(advanceDebounce),
+                    Effect.zipRight(awaitSnapshot(harness)),
+                    Effect.zipRight(awaitCalls(harness, 1)),
+                    Effect.zipRight(Ref.get(harness.daemon.cache)),
+                    Effect.tap((cache) =>
+                        Effect.sync(() => {
+                            expect(cache.ensuredGitRoots.has(repo)).toBeFalse();
+                            expect(cache.lastSynchronizedAt).toBeNull();
+                        }),
+                    ),
+                    Effect.zipRight(emitInvalidated(harness, 1)),
+                    Effect.zipRight(advanceDebounce),
+                    Effect.zipRight(awaitSnapshot(harness)),
+                    Effect.zipRight(awaitCalls(harness, 1)),
+                    Effect.zipRight(Ref.get(harness.daemon.cache)),
+                    Effect.tap((cache) =>
+                        Effect.sync(() => {
+                            expect(harness.calls).toEqual([`ensure:${repo}`, `ensure:${repo}`]);
+                            expect([...cache.ensuredGitRoots]).toEqual([repo]);
+                            expect(cache.lastSynchronizedAt).not.toBeNull();
+                        }),
+                    ),
+                );
+            },
+            {
+                ensureProject: (path) =>
+                    Effect.suspend(() => {
+                        attempts += 1;
+                        return attempts === 1
+                            ? Effect.fail(adapterError("ensure_project", path))
+                            : Effect.void;
+                    }),
+            },
+        );
+    });
+});
+
+test("ensures a root introduced by a later snapshot without repeating prior roots", async () => {
+    await withTemporaryDirectory(async (directory) => {
+        const repoA = join(directory, "repo-a");
+        const repoB = join(directory, "repo-b");
+        await initializeRepository(repoA);
+        await initializeRepository(repoB);
+        await withDaemon((harness) => {
+            queueSnapshot(harness, 1, snapshot(null, [workspace("a", repoA)]));
+            queueSnapshot(
+                harness,
+                1,
+                snapshot(null, [workspace("a", repoA), workspace("b", repoB)]),
+            );
+            return emitInvalidated(harness, 1).pipe(
+                Effect.zipRight(advanceDebounce),
+                Effect.zipRight(awaitSnapshot(harness)),
+                Effect.zipRight(awaitCalls(harness, 1)),
+                Effect.zipRight(emitInvalidated(harness, 1)),
+                Effect.zipRight(advanceDebounce),
+                Effect.zipRight(awaitSnapshot(harness)),
+                Effect.zipRight(awaitCalls(harness, 1)),
+                Effect.zipRight(Ref.get(harness.daemon.cache)),
+                Effect.tap((cache) =>
+                    Effect.sync(() => {
+                        expect(harness.calls).toEqual([`ensure:${repoA}`, `ensure:${repoB}`]);
+                        expect([...cache.ensuredGitRoots]).toEqual([repoA, repoB]);
+                    }),
+                ),
+            );
+        });
+    });
+});
+
+test("stale ensure completion cannot record a root or synchronization time", async () => {
+    await withTemporaryDirectory(async (directory) => {
+        const oldRepo = join(directory, "old-repo");
+        await initializeRepository(oldRepo);
+        const gate = await Effect.runPromise(Deferred.make<void>());
+        const ensureCompleted = await Effect.runPromise(Deferred.make<void>());
+        await withDaemon(
+            (harness) => {
+                queueSnapshot(harness, 1, snapshot(null, [workspace("old", oldRepo)]));
+                return emitInvalidated(harness, 1).pipe(
+                    Effect.zipRight(advanceDebounce),
+                    Effect.zipRight(awaitSnapshot(harness)),
+                    Effect.zipRight(awaitCalls(harness, 1)),
+                    Effect.zipRight(
+                        Ref.update(harness.daemon.cache, (cache) => ({
+                            ...cache,
+                            latestLiveGeneration: generation(2),
+                        })),
+                    ),
+                    Effect.zipRight(Ref.get(harness.daemon.cache)),
+                    Effect.tap((cache) =>
+                        Effect.sync(() => {
+                            expect(cache.latestLiveGeneration).toBe(generation(2));
+                            expect(cache.ensuredGitRoots.has(oldRepo)).toBeFalse();
+                            expect(cache.lastSynchronizedAt).toBeNull();
+                        }),
+                    ),
+                    Effect.zipRight(Queue.takeAll(harness.logEvents)),
+                    Effect.zipRight(Deferred.succeed(gate, undefined)),
+                    Effect.zipRight(Deferred.await(ensureCompleted)),
+                    Effect.zipRight(Queue.take(harness.logEvents)),
+                    Effect.tap((log) =>
+                        Effect.sync(() => {
+                            expect(log.message).toBe("workspace_sync_succeeded");
+                            expect(log.annotations.operation).toBe("ensure_project");
+                        }),
+                    ),
+                    Effect.zipRight(Ref.get(harness.daemon.cache)),
+                    Effect.tap((cache) =>
+                        Effect.sync(() => {
+                            expect(cache.ensuredGitRoots.has(oldRepo)).toBeFalse();
+                            expect(cache.lastSynchronizedAt).toBeNull();
+                        }),
+                    ),
+                );
+            },
+            {
+                ensureProject: () =>
+                    Effect.uninterruptible(Deferred.await(gate)).pipe(
+                        Effect.zipRight(Deferred.succeed(ensureCompleted, undefined)),
+                    ),
+            },
+        );
     });
 });
 
@@ -779,6 +917,44 @@ test("disconnect interrupts a blocked snapshot before cache installation or edit
                 Effect.zipRight(Ref.get(harness.daemon.cache)),
                 Effect.tap((cache) =>
                     Effect.sync(() => {
+                        expect(cache.snapshot?.focusedWorkspaceId).toBe(workspaceId("new"));
+                        expect(harness.calls).toEqual([`ensure:${newRepo}`, `focus:${newRepo}`]);
+                        expect(harness.calls).not.toContain(`ensure:${oldRepo}`);
+                        expect(harness.calls).not.toContain(`focus:${oldRepo}`);
+                    }),
+                ),
+            );
+        });
+    });
+});
+
+test("Invalidated(2) supersedes a blocked generation 1 without Disconnected(1)", async () => {
+    await withTemporaryDirectory(async (directory) => {
+        const oldRepo = join(directory, "old-repo");
+        const newRepo = join(directory, "new-repo");
+        await initializeRepository(oldRepo);
+        await initializeRepository(newRepo);
+        const gate = await Effect.runPromise(Deferred.make<WorkspaceSnapshot>());
+        await withDaemon((harness) => {
+            harness.snapshots.set(1, [Deferred.await(gate)]);
+            queueSnapshot(harness, 2, snapshot("new", [workspace("new", newRepo)]));
+            return emitInvalidated(harness, 1).pipe(
+                Effect.zipRight(advanceDebounce),
+                Effect.zipRight(awaitSnapshot(harness)),
+                Effect.zipRight(
+                    Effect.sync(() => {
+                        expect(harness.snapshotCalls).toEqual([1]);
+                        expect(harness.calls).toEqual([]);
+                    }),
+                ),
+                Effect.zipRight(emitInvalidated(harness, 2)),
+                Effect.zipRight(advanceDebounce),
+                Effect.zipRight(awaitSnapshot(harness)),
+                Effect.zipRight(awaitCalls(harness, 2)),
+                Effect.zipRight(Ref.get(harness.daemon.cache)),
+                Effect.tap((cache) =>
+                    Effect.sync(() => {
+                        expect(harness.snapshotCalls).toEqual([1, 2]);
                         expect(cache.snapshot?.focusedWorkspaceId).toBe(workspaceId("new"));
                         expect(harness.calls).toEqual([`ensure:${newRepo}`, `focus:${newRepo}`]);
                         expect(harness.calls).not.toContain(`ensure:${oldRepo}`);

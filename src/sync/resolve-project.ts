@@ -47,29 +47,21 @@ const resolveGitRoot = (candidate: string, workspace: WorkspaceRecord) =>
                 );
             }
 
-            const roots = output
-                .split("\n")
-                .map((line) => line.trim())
-                .filter((line) => line.length > 0);
-            if (roots.length === 0) {
+            const root = output.endsWith("\n") ? output.slice(0, -1) : output;
+            if (root.length === 0) {
                 return yield* Effect.fail(
                     resolutionError(workspace, "git_root", "not_git_repository", candidate),
                 );
             }
-            if (roots.length !== 1) {
-                return yield* Effect.fail(
-                    resolutionError(workspace, "git_root", "ambiguous_path", candidate),
-                );
-            }
 
-            return roots[0]!;
+            return root;
         }),
     ).pipe(
         Effect.catchAll((error) =>
             error._tag === "WorkspaceResolutionError"
                 ? Effect.fail(error)
                 : Effect.fail(
-                      resolutionError(workspace, "git_root", "not_git_repository", candidate),
+                      resolutionError(workspace, "git_root", "inaccessible_path", candidate),
                   ),
         ),
     );

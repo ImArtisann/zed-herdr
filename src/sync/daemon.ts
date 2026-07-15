@@ -36,6 +36,7 @@ export interface SyncCache {
     readonly snapshot: WorkspaceSnapshot | null;
     readonly cwdHints: ReadonlyMap<WorkspaceId, string>;
     readonly projects: ReadonlyMap<WorkspaceId, WorkspaceProject>;
+    readonly ensuredGitRoots: ReadonlySet<string>;
     readonly lastSuccessful: SuccessfulWorkspaceProject | null;
     readonly lastSynchronizedAt: number | null;
 }
@@ -45,6 +46,7 @@ export const makeEmptySyncCache = (): SyncCache => ({
     snapshot: null,
     cwdHints: new Map(),
     projects: new Map(),
+    ensuredGitRoots: new Set(),
     lastSuccessful: null,
     lastSynchronizedAt: null,
 });
@@ -219,36 +221,48 @@ export const makeSyncDaemon = Effect.gen(function* () {
             );
             yield* gateGeneration(cache, trigger.generation);
             const installed = yield* installSnapshot(cache, trigger.generation, snapshot, projects);
-            const firstValidSnapshot = previous.projects.size === 0 && projects.size > 0;
-
-            if (firstValidSnapshot) {
-                for (const project of uniqueProjects(snapshot, projects)) {
-                    yield* gateGeneration(cache, trigger.generation);
-                    const result = yield* Effect.either(adapter.ensureProject(project.gitRoot));
-                    const now = yield* Clock.currentTimeNanos;
-                    if (result._tag === "Left") {
-                        yield* logSync("error", "workspace_sync_failed", {
-                            workspaceId: project.workspaceId,
-                            workspace: project.name,
-                            path: project.gitRoot,
-                            operation: "ensure_project",
-                            elapsedMs: elapsedMillis(trigger.ingressAt, now),
-                            cause: result.left,
-                        });
-                    } else {
-                        yield* logSync("info", "workspace_sync_succeeded", {
-                            workspaceId: project.workspaceId,
-                            workspace: project.name,
-                            path: project.gitRoot,
-                            operation: "ensure_project",
-                            elapsedMs: elapsedMillis(trigger.ingressAt, now),
-                        });
-                        yield* Ref.update(cache, (state) => ({
-                            ...state,
-                            lastSynchronizedAt: Number(now) / 1_000_000,
-                        }));
-                    }
+            for (const project of uniqueProjects(snapshot, projects)) {
+                if (installed.ensuredGitRoots.has(project.gitRoot)) {
+                    continue;
                 }
+
+                yield* gateGeneration(cache, trigger.generation);
+                const result = yield* Effect.either(adapter.ensureProject(project.gitRoot));
+                const now = yield* Clock.currentTimeNanos;
+                if (result._tag === "Left") {
+                    yield* logSync("error", "workspace_sync_failed", {
+                        workspaceId: project.workspaceId,
+                        workspace: project.name,
+                        path: project.gitRoot,
+                        operation: "ensure_project",
+                        elapsedMs: elapsedMillis(trigger.ingressAt, now),
+                        cause: result.left,
+                    });
+                    continue;
+                }
+
+                yield* Ref.modify(cache, (state) => {
+                    if (state.latestLiveGeneration !== trigger.generation) {
+                        return [false, state] as const;
+                    }
+                    const ensuredGitRoots = new Set(state.ensuredGitRoots);
+                    ensuredGitRoots.add(project.gitRoot);
+                    return [
+                        true,
+                        {
+                            ...state,
+                            ensuredGitRoots,
+                            lastSynchronizedAt: Number(now) / 1_000_000,
+                        },
+                    ] as const;
+                });
+                yield* logSync("info", "workspace_sync_succeeded", {
+                    workspaceId: project.workspaceId,
+                    workspace: project.name,
+                    path: project.gitRoot,
+                    operation: "ensure_project",
+                    elapsedMs: elapsedMillis(trigger.ingressAt, now),
+                });
             }
 
             const focusedId = snapshot.focusedWorkspaceId;
@@ -264,10 +278,7 @@ export const makeSyncDaemon = Effect.gen(function* () {
                 workspaceId: focusedId,
                 gitRoot: project.gitRoot,
             } satisfies SuccessfulWorkspaceProject;
-            if (
-                !firstValidSnapshot &&
-                sameSuccessfulProject(installed.lastSuccessful, successful)
-            ) {
+            if (sameSuccessfulProject(installed.lastSuccessful, successful)) {
                 return;
             }
 
