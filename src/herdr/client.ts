@@ -111,7 +111,6 @@ const writeReadOnlyRequest = (socket: Bun.Socket, request: HerdRRequest): void =
     socket.write(`${JSON.stringify(request)}\n`);
 };
 
-
 const decodeGeneration = (value: number): WorkspaceGeneration =>
     Schema.decodeUnknownSync(WorkspaceGeneration)(value);
 
@@ -623,9 +622,7 @@ class LiveHerdRClient implements HerdRClientService {
         cause: unknown,
     ): void {
         Runtime.runFork(this.#runtime)(
-            Effect.logWarning(message).pipe(
-                Effect.annotateLogs({ cause: boundedCause(cause) }),
-            ),
+            Effect.logWarning(message).pipe(Effect.annotateLogs({ cause: boundedCause(cause) })),
         );
     }
 

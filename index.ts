@@ -1,11 +1,5 @@
-export * from "./src/domain/errors.ts";
-export * from "./src/domain/workspace.ts";
-export * from "./src/herdr/client.ts";
-export * from "./src/herdr/ndjson.ts";
-export * from "./src/herdr/protocol.ts";
-export * from "./src/herdr/workspace-source.ts";
-export * from "./src/services/editor-adapter.ts";
-export * from "./src/services/workspace-hint-source.ts";
-export * from "./src/services/workspace-source.ts";
-export * from "./src/sync/daemon.ts";
-export * from "./src/sync/resolve-project.ts";
+import * as BunRuntime from "@effect/platform-bun/BunRuntime";
+
+import { runCli } from "./src/cli.ts";
+
+BunRuntime.runMain(runCli(), { disablePrettyLogger: true });

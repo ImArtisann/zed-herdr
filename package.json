@@ -6,9 +6,11 @@
     "scripts": {
         "build": "bun build ./index.ts --target bun --outdir ./dist",
         "check": "bun run typecheck && bun run lint && bun run build && bun test",
+        "dev": "bun --watch ./index.ts daemon",
         "lint": "oxlint .",
         "lint:fix": "oxlint . --fix",
         "format": "oxfmt .",
+        "start": "bun ./index.ts daemon",
         "test": "bun test",
         "typecheck": "tsc --noEmit"
     },
