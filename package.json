@@ -1,21 +1,26 @@
 {
-  "name": "zed-herdr",
-  "module": "index.ts",
-  "type": "module",
-  "private": true,
-  "scripts": {
-    "lint": "oxlint .",
-    "lint:fix": "oxlint . --fix",
-    "format": "oxfmt ."
-  },
-  "devDependencies": {
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
-  },
-  "dependencies": {
-    "oxfmt": "^0.59.0",
-    "oxlint": "^1.74.0"
-  }
+    "name": "zed-herdr",
+    "module": "index.ts",
+    "type": "module",
+    "private": true,
+    "scripts": {
+        "build": "bun build ./index.ts --target bun --outdir ./dist",
+        "check": "bun run typecheck && bun run lint && bun run build && bun test",
+        "lint": "oxlint .",
+        "lint:fix": "oxlint . --fix",
+        "format": "oxfmt .",
+        "test": "bun test",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@effect/platform": "^0.97.0",
+        "@effect/platform-bun": "^0.91.0",
+        "effect": "^3.22.0"
+    },
+    "devDependencies": {
+        "@types/bun": "^1.3.14",
+        "oxfmt": "^0.59.0",
+        "oxlint": "^1.74.0",
+        "typescript": "^5.9.3"
+    }
 }
