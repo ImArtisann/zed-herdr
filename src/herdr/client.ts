@@ -4,6 +4,7 @@ import * as Either from "effect/Either";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import * as Runtime from "effect/Runtime";
 import * as Stream from "effect/Stream";
 import { homedir } from "node:os";
 
@@ -109,14 +110,6 @@ const writeReadOnlyRequest = (socket: Bun.Socket, request: HerdRRequest): void =
     socket.write(`${JSON.stringify(request)}\n`);
 };
 
-const logTransport = (
-    message: "herdr_disconnected" | "herdr_reconnecting",
-    cause: unknown,
-): void => {
-    void Effect.runPromise(
-        Effect.logWarning(message).pipe(Effect.annotateLogs({ cause: boundedCause(cause) })),
-    );
-};
 
 const decodeGeneration = (value: number): WorkspaceGeneration =>
     Schema.decodeUnknownSync(WorkspaceGeneration)(value);
@@ -145,9 +138,15 @@ class LiveHerdRClient implements HerdRClientService {
     #stopped = false;
     #cancelSleep: (() => void) | null = null;
     readonly #eventPubSub: PubSub.PubSub<WorkspaceSourceEvent>;
+    readonly #runtime: Runtime.Runtime<never>;
 
-    constructor(eventPubSub: PubSub.PubSub<WorkspaceSourceEvent>, environment: NodeJS.ProcessEnv) {
+    constructor(
+        eventPubSub: PubSub.PubSub<WorkspaceSourceEvent>,
+        environment: NodeJS.ProcessEnv,
+        runtime: Runtime.Runtime<never>,
+    ) {
         this.#eventPubSub = eventPubSub;
+        this.#runtime = runtime;
         this.socketPath = resolveHerdRSocketPath(environment);
         this.events = Stream.fromPubSub(this.#eventPubSub);
         this.snapshot = this.snapshot.bind(this);
@@ -237,7 +236,7 @@ class LiveHerdRClient implements HerdRClientService {
                     return;
                 }
                 failures += 1;
-                logTransport("herdr_disconnected", cause);
+                this.#logWarning("herdr_disconnected", cause);
             }
 
             if (this.#stopped) {
@@ -250,7 +249,7 @@ class LiveHerdRClient implements HerdRClientService {
                 retryMaximumDelayMs,
                 Math.floor(cap * (0.8 + Math.random() * 0.4)),
             );
-            logTransport("herdr_reconnecting", `delay_ms=${delay}`);
+            this.#logWarning("herdr_reconnecting", `delay_ms=${delay}`);
             await this.#sleep(delay);
         }
     }
@@ -298,9 +297,7 @@ class LiveHerdRClient implements HerdRClientService {
             try {
                 parsed = JSON.parse(frame);
             } catch (cause) {
-                void Effect.runPromise(
-                    Effect.logWarning("herdr_malformed_frame", { cause: boundedCause(cause) }),
-                );
+                this.#logWarning("herdr_malformed_frame", cause);
                 return;
             }
 
@@ -331,11 +328,7 @@ class LiveHerdRClient implements HerdRClientService {
                 "id" in parsed &&
                 parsed.id === id
             ) {
-                void Effect.runPromise(
-                    Effect.logWarning("herdr_malformed_frame", {
-                        cause: "malformed subscription response",
-                    }),
-                );
+                this.#logWarning("herdr_malformed_frame", "malformed subscription response");
                 return;
             }
             if (parsed === null || typeof parsed !== "object" || !("event" in parsed)) {
@@ -347,9 +340,7 @@ class LiveHerdRClient implements HerdRClientService {
             }
             const event = Schema.decodeUnknownEither(LifecycleEventEnvelope)(parsed);
             if (!Either.isRight(event)) {
-                void Effect.runPromise(
-                    Effect.logWarning("herdr_malformed_frame", { cause: boundedCause(event.left) }),
-                );
+                this.#logWarning("herdr_malformed_frame", event.left);
                 return;
             }
             if (acked) {
@@ -459,9 +450,7 @@ class LiveHerdRClient implements HerdRClientService {
             try {
                 parsed = JSON.parse(frame);
             } catch (cause) {
-                void Effect.runPromise(
-                    Effect.logWarning("herdr_malformed_frame", { cause: boundedCause(cause) }),
-                );
+                this.#logWarning("herdr_malformed_frame", cause);
                 return;
             }
 
@@ -486,11 +475,7 @@ class LiveHerdRClient implements HerdRClientService {
                 "id" in parsed &&
                 parsed.id === id
             ) {
-                void Effect.runPromise(
-                    Effect.logWarning("herdr_malformed_frame", {
-                        cause: "malformed snapshot response",
-                    }),
-                );
+                this.#logWarning("herdr_malformed_frame", "malformed snapshot response");
             }
         };
         const finishAfterDecoderEnd = (cause: unknown): void => {
@@ -596,6 +581,17 @@ class LiveHerdRClient implements HerdRClientService {
         });
     }
 
+    #logWarning(
+        message: "herdr_disconnected" | "herdr_reconnecting" | "herdr_malformed_frame",
+        cause: unknown,
+    ): void {
+        Runtime.runFork(this.#runtime)(
+            Effect.logWarning(message).pipe(
+                Effect.annotateLogs({ cause: boundedCause(cause) }),
+            ),
+        );
+    }
+
     #asClientError(
         cause: unknown,
         operation: "connect" | "request" | "subscribe" | "read",
@@ -620,7 +616,8 @@ class LiveHerdRClient implements HerdRClientService {
 export const makeHerdRClient = (environment: NodeJS.ProcessEnv = process.env) =>
     Effect.gen(function* () {
         const events = yield* PubSub.unbounded<WorkspaceSourceEvent>({ replay: 1 });
-        const client = new LiveHerdRClient(events, environment);
+        const runtime = yield* Effect.runtime<never>();
+        const client = new LiveHerdRClient(events, environment, runtime);
         client.start();
         yield* Effect.addFinalizer(() =>
             Effect.sync(() => client.close()).pipe(Effect.zipRight(PubSub.shutdown(events))),
