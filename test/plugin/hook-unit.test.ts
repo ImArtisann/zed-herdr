@@ -5,6 +5,11 @@ import { join } from "node:path";
 
 import { decodeHookNotification, HookStartupError, runHook } from "../../src/plugin/hook.ts";
 import type { HookControlApi } from "../../src/plugin/hook.ts";
+import {
+    ControlProtocolError,
+    ControlUnavailable,
+    UnsafeControlSocket,
+} from "../../src/plugin/control.ts";
 import type { HookNotification } from "../../src/plugin/protocol.ts";
 
 const expectNotification = (
@@ -29,41 +34,50 @@ const hookEnvironment = (overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv =
 const temporaryDirectory = (): Promise<string> => mkdtemp(join(tmpdir(), "zed-herdr-hook-"));
 
 const unavailable = async (): Promise<void> => {
-    throw new Error("control unavailable");
+    throw new ControlUnavailable("/control.sock", "connect");
 };
 
 const controlFor = (
     path: string,
     notify: HookControlApi["notifyControl"],
     prepare: HookControlApi["prepareControlSocket"] = async () => undefined,
+    prepareDirectory: HookControlApi["prepareControlSocketDirectory"] = async () => undefined,
 ): HookControlApi => ({
     controlSocketPath: () => path,
     notifyControl: notify,
     prepareControlSocket: prepare,
+    prepareControlSocketDirectory: prepareDirectory,
 });
 
 test("declares the official HerdR v0.7.3 plugin manifest", async () => {
     const manifest = await readFile(join(import.meta.dir, "../../herdr-plugin.toml"), "utf8");
 
-    expect(manifest).toContain('id = "dev.zed-herdr"');
-    expect(manifest).toContain('name = "Zed Workspace Sync"');
-    expect(manifest).toContain('version = "0.1.0"');
-    expect(manifest).toContain('min_herdr_version = "0.7.3"');
-    expect(manifest).toContain('platforms = ["macos", "linux"]');
-    expect(manifest.match(/\[\[build\]\]/g)).toHaveLength(2);
-    expect(manifest).toContain('command = ["bun", "install", "--frozen-lockfile"]');
-    expect(manifest).toContain('command = ["bun", "run", "build"]');
-    expect(manifest.match(/\[\[events\]\]/g)).toHaveLength(2);
-    expect(manifest).toContain('on = "workspace.created"');
-    expect(manifest).toContain('on = "workspace.focused"');
-    expect(manifest.match(/command = \["bun", "\.\/dist\/index\.js", "hook"\]/g)).toHaveLength(2);
-    expect(manifest).toContain('id = "daemon"');
-    expect(manifest).toContain('title = "Zed Workspace Sync"');
-    expect(manifest).toContain('placement = "tab"');
-    expect(manifest).toContain('command = ["bun", "./dist/index.js", "daemon"]');
+    expect(Bun.TOML.parse(manifest)).toEqual({
+        id: "dev.zed-herdr",
+        name: "Zed Workspace Sync",
+        version: "0.1.0",
+        min_herdr_version: "0.7.3",
+        platforms: ["macos", "linux"],
+        build: [
+            { command: ["bun", "install", "--frozen-lockfile"] },
+            { command: ["bun", "run", "build"] },
+        ],
+        events: [
+            { on: "workspace.created", command: ["bun", "./dist/index.js", "hook"] },
+            { on: "workspace.focused", command: ["bun", "./dist/index.js", "hook"] },
+        ],
+        panes: [
+            {
+                id: "daemon",
+                title: "Zed Workspace Sync",
+                placement: "tab",
+                command: ["bun", "./dist/index.js", "daemon"],
+            },
+        ],
+    });
 });
 
-test("uses documented event workspace payloads before HERDR_WORKSPACE_ID and context cwd", () => {
+test("uses documented event workspace payloads before HERDR_WORKSPACE_ID and context cwd", async () => {
     expectNotification(
         decodeHookNotification(hookEnvironment()),
         "event-workspace",
@@ -99,6 +113,40 @@ test("uses documented event workspace payloads before HERDR_WORKSPACE_ID and con
             }),
         ),
     ).toBeUndefined();
+});
+
+test("rejects invalid or incomplete event and context hook payload schemas", async () => {
+    const environmentWithoutFallback = {
+        ...hookEnvironment(),
+        HERDR_WORKSPACE_ID: undefined,
+    };
+
+    for (const environment of [
+        {
+            ...environmentWithoutFallback,
+            HERDR_PLUGIN_EVENT_JSON: JSON.stringify({ data: { workspace_id: 1 } }),
+        },
+        {
+            ...environmentWithoutFallback,
+            HERDR_PLUGIN_EVENT_JSON: JSON.stringify({ data: {} }),
+        },
+        {
+            ...environmentWithoutFallback,
+            HERDR_PLUGIN_EVENT_JSON: JSON.stringify({
+                data: { workspace: { workspace_id: "" } },
+            }),
+        },
+        {
+            ...environmentWithoutFallback,
+            HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_cwd: "" }),
+        },
+        {
+            ...environmentWithoutFallback,
+            HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({}),
+        },
+    ]) {
+        expect(decodeHookNotification(environment)).toBeUndefined();
+    }
 });
 
 test("notifies an existing daemon without opening a pane", async () => {
@@ -185,6 +233,73 @@ test("does not invoke an opener after the shared deadline expires", async () => 
     }
 });
 
+test("propagates protocol and unsafe control errors without retrying or opening a pane", async () => {
+    const directory = await temporaryDirectory();
+    try {
+        const path = join(directory, "control.sock");
+        for (const failure of [
+            new ControlProtocolError(path, "malformed response"),
+            new UnsafeControlSocket(path, "unsafe_mode"),
+        ]) {
+            let notifications = 0;
+            let opens = 0;
+
+            await expect(
+                runHook({
+                    control: controlFor(path, async () => {
+                        notifications += 1;
+                        throw failure;
+                    }),
+                    environment: hookEnvironment(),
+                    openPane: async () => {
+                        opens += 1;
+                    },
+                }),
+            ).rejects.toBe(failure);
+            expect(notifications).toBe(1);
+            expect(opens).toBe(0);
+        }
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("rejects an unsafe control parent before attempting notification or pane opening", async () => {
+    const directory = await temporaryDirectory();
+    try {
+        const path = join(directory, "control.sock");
+        const failure = new UnsafeControlSocket(path, "unsafe_parent");
+        let directoryPreparations = 0;
+        let notifications = 0;
+        let opens = 0;
+
+        await expect(
+            runHook({
+                control: controlFor(
+                    path,
+                    async () => {
+                        notifications += 1;
+                    },
+                    async () => undefined,
+                    async () => {
+                        directoryPreparations += 1;
+                        throw failure;
+                    },
+                ),
+                environment: hookEnvironment(),
+                openPane: async () => {
+                    opens += 1;
+                },
+            }),
+        ).rejects.toBe(failure);
+        expect(directoryPreparations).toBe(1);
+        expect(notifications).toBe(0);
+        expect(opens).toBe(0);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
 test("opens the exact unfocused daemon argv once while twenty hooks contend", async () => {
     const directory = await temporaryDirectory();
     try {
@@ -254,6 +369,42 @@ test("fails closed on a non-owner-only canonical lock directory", async () => {
                 environment: hookEnvironment(),
             }),
         ).rejects.toMatchObject({ _tag: "HookStartupError", operation: "lock" });
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("rejects invalid and incomplete lock owner schemas", async () => {
+    const directory = await temporaryDirectory();
+    try {
+        const invalidLocks = [
+            { pid: "not-an-integer", token: "invalid-owner", createdAt: Date.now() },
+            { pid: 1, token: "incomplete-owner" },
+        ];
+
+        for (const [index, contents] of invalidLocks.entries()) {
+            const path = join(directory, `control-${index}.sock`);
+            const lockPath = `${path}.lock`;
+            const token = contents.token;
+            await mkdir(lockPath, { mode: 0o700 });
+            await chmod(lockPath, 0o700);
+            await writeFile(join(lockPath, `${token}.json`), JSON.stringify(contents), {
+                mode: 0o600,
+            });
+            await chmod(join(lockPath, `${token}.json`), 0o600);
+
+            let opens = 0;
+            await expect(
+                runHook({
+                    control: controlFor(path, unavailable),
+                    environment: hookEnvironment(),
+                    openPane: async () => {
+                        opens += 1;
+                    },
+                }),
+            ).rejects.toMatchObject({ _tag: "HookStartupError", operation: "lock" });
+            expect(opens).toBe(0);
+        }
     } finally {
         await rm(directory, { recursive: true, force: true });
     }
@@ -335,13 +486,18 @@ test("takes over a stale empty lock directory without treating a fresh pending d
     }
 });
 
-test("fails after the 1.5-second readiness deadline and releases its lock", async () => {
+test("retries ControlUnavailable through the 1.5-second readiness deadline and releases its lock", async () => {
     const directory = await temporaryDirectory();
     try {
         const path = join(directory, "control.sock");
         let now = 0;
+        let notifications = 0;
+        let sleeps = 0;
         let opens = 0;
-        const control = controlFor(path, unavailable);
+        const control = controlFor(path, async () => {
+            notifications += 1;
+            await unavailable();
+        });
 
         await expect(
             runHook({
@@ -349,6 +505,7 @@ test("fails after the 1.5-second readiness deadline and releases its lock", asyn
                 environment: hookEnvironment(),
                 now: () => now,
                 sleep: async (milliseconds) => {
+                    sleeps += 1;
                     now += milliseconds;
                 },
                 openPane: async () => {
@@ -356,6 +513,9 @@ test("fails after the 1.5-second readiness deadline and releases its lock", asyn
                 },
             }),
         ).rejects.toMatchObject({ _tag: "HookStartupError", operation: "readiness" });
+        expect(now).toBe(1_500);
+        expect(sleeps).toBe(60);
+        expect(notifications).toBe(62);
         expect(opens).toBe(1);
         await expect(readFile(`${path}.lock`, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     } finally {

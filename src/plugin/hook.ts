@@ -13,24 +13,41 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 
+import * as Schema from "effect/Schema";
+
 import {
     AlreadyRunning,
+    ControlUnavailable,
     controlSocketPath,
     notifyControl,
     prepareControlSocket,
+    prepareControlSocketDirectory,
 } from "./control.ts";
-import type { HookNotification } from "./protocol.ts";
+import {
+    HookNotification,
+    type HookNotification as HookNotificationValue,
+} from "./protocol.ts";
 
-const controlReadinessMs = 1_500;
-const lockStaleMs = 5_000;
-const lockPollMs = 25;
-const pluginId = "dev.zed-herdr";
+const CONTROL_READINESS_MS = 1_500;
+const LOCK_STALE_MS = 5_000;
+const LOCK_POLL_MS = 25;
+const PLUGIN_ID = "dev.zed-herdr";
 
-interface LockContents {
-    readonly pid: number;
-    readonly token: string;
-    readonly createdAt: number;
-}
+const NonEmptyText = Schema.String.pipe(Schema.nonEmptyString(), Schema.maxLength(4_096));
+const HookEvent = Schema.Struct({
+    data: Schema.Struct({
+        workspace: Schema.optional(Schema.Struct({ workspace_id: NonEmptyText })),
+        workspace_id: Schema.optional(NonEmptyText),
+    }),
+});
+const HookContext = Schema.Struct({ workspace_cwd: NonEmptyText });
+const LockContentsSchema = Schema.Struct({
+    pid: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+    token: NonEmptyText,
+    createdAt: Schema.Number.pipe(Schema.finite()),
+});
+
+type LockContents = Schema.Schema.Type<typeof LockContentsSchema>;
 
 interface LockIdentity {
     readonly dev: number;
@@ -40,6 +57,7 @@ interface LockIdentity {
 export interface HookControlApi {
     readonly controlSocketPath: (environment: NodeJS.ProcessEnv) => string;
     readonly prepareControlSocket: (path: string) => Promise<void>;
+    readonly prepareControlSocketDirectory: (path: string) => Promise<void>;
     readonly notifyControl: (
         path: string,
         notification: HookNotification,
@@ -78,6 +96,7 @@ export class HookStartupError extends Error {
 const defaultControl: HookControlApi = {
     controlSocketPath,
     prepareControlSocket,
+    prepareControlSocketDirectory,
     notifyControl,
 };
 
@@ -127,51 +146,41 @@ const invokeWithinDeadline = async <Value>(
     return awaitWithinDeadline(invoke(), deadline, now);
 };
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-    typeof value === "object" && value !== null && !Array.isArray(value);
+const decodeNonEmptyText = (value: unknown): string | undefined => {
+    const decoded = Schema.decodeUnknownEither(NonEmptyText)(value);
+    return decoded._tag === "Right" ? decoded.right : undefined;
+};
 
-const asRecord = (value: unknown): Record<string, unknown> | undefined =>
-    isRecord(value) ? value : undefined;
-
-const nonEmptyText = (value: unknown): string | undefined =>
-    typeof value === "string" && value.length > 0 && value.length <= 4_096 ? value : undefined;
-
-const parseJson = (value: string | undefined): Record<string, unknown> | undefined => {
+const decodeJson = <A, I>(
+    schema: Schema.Schema<A, I>,
+    value: string | undefined,
+): A | undefined => {
     if (value === undefined) {
         return undefined;
     }
-
-    try {
-        return asRecord(JSON.parse(value));
-    } catch {
-        return undefined;
-    }
-};
-
-const eventWorkspaceId = (event: Record<string, unknown> | undefined): string | undefined => {
-    const data = asRecord(event?.data);
-    const workspace = asRecord(data?.workspace);
-    return nonEmptyText(workspace?.workspace_id) ?? nonEmptyText(data?.workspace_id);
+    const decoded = Schema.decodeUnknownEither(Schema.parseJson(schema))(value);
+    return decoded._tag === "Right" ? decoded.right : undefined;
 };
 
 /** Decode only the documented HerdR hook payload and context variables. */
 export const decodeHookNotification = (
     environment: NodeJS.ProcessEnv = process.env,
-): HookNotification | undefined => {
+): HookNotificationValue | undefined => {
+    const event = decodeJson(HookEvent, environment.HERDR_PLUGIN_EVENT_JSON);
     const workspaceId =
-        eventWorkspaceId(parseJson(environment.HERDR_PLUGIN_EVENT_JSON)) ??
-        nonEmptyText(environment.HERDR_WORKSPACE_ID);
-    const context = parseJson(environment.HERDR_PLUGIN_CONTEXT_JSON);
-    const cwd = nonEmptyText(context?.workspace_cwd);
-
-    if (workspaceId === undefined || cwd === undefined) {
+        event?.data.workspace?.workspace_id ??
+        event?.data.workspace_id ??
+        decodeNonEmptyText(environment.HERDR_WORKSPACE_ID);
+    const context = decodeJson(HookContext, environment.HERDR_PLUGIN_CONTEXT_JSON);
+    if (workspaceId === undefined || context === undefined) {
         return undefined;
     }
 
-    return {
-        workspaceId: workspaceId as HookNotification["workspaceId"],
-        cwd,
-    };
+    const notification = Schema.decodeUnknownEither(HookNotification)({
+        workspaceId,
+        cwd: context.workspace_cwd,
+    });
+    return notification._tag === "Right" ? notification.right : undefined;
 };
 
 const isNodeError = (error: unknown, code: string): boolean =>
@@ -187,30 +196,8 @@ const lockIdentity = (stat: { readonly dev: number; readonly ino: number }): Loc
     ino: stat.ino,
 });
 
-const parseLock = (value: string): LockContents | undefined => {
-    try {
-        const parsed = JSON.parse(value);
-        if (
-            !isRecord(parsed) ||
-            typeof parsed.pid !== "number" ||
-            !Number.isInteger(parsed.pid) ||
-            parsed.pid < 0 ||
-            typeof parsed.token !== "string" ||
-            parsed.token.length === 0 ||
-            typeof parsed.createdAt !== "number" ||
-            !Number.isFinite(parsed.createdAt)
-        ) {
-            return undefined;
-        }
-        return {
-            pid: parsed.pid,
-            token: parsed.token,
-            createdAt: parsed.createdAt,
-        };
-    } catch {
-        return undefined;
-    }
-};
+const parseLock = (value: string): LockContents | undefined =>
+    decodeJson(LockContentsSchema, value);
 
 interface LockInspection {
     readonly createdAt: number;
@@ -327,7 +314,7 @@ const removeStaleLock = async (path: string, now: number): Promise<boolean> => {
         throw error;
     }
 
-    if (now - initial.createdAt < lockStaleMs) {
+    if (now - initial.createdAt < LOCK_STALE_MS) {
         return false;
     }
 
@@ -440,7 +427,7 @@ const acquireLock = async (
                 "Timed out waiting for control socket readiness",
             );
         }
-        await sleep(lockPollMs);
+        await sleep(LOCK_POLL_MS);
     }
 };
 
@@ -520,12 +507,12 @@ const paneOpenArgv = (
     workspaceId: string,
     environment: NodeJS.ProcessEnv,
 ): ReadonlyArray<string> => [
-    nonEmptyText(environment.HERDR_BIN_PATH) ?? "herdr",
+    decodeNonEmptyText(environment.HERDR_BIN_PATH) ?? "herdr",
     "plugin",
     "pane",
     "open",
     "--plugin",
-    pluginId,
+    PLUGIN_ID,
     "--entrypoint",
     "daemon",
     "--placement",
@@ -554,14 +541,17 @@ const notifyUntilReady = async (
         try {
             await control.notifyControl(path, notification, remaining);
             return;
-        } catch {
+        } catch (error) {
+            if (!(error instanceof ControlUnavailable)) {
+                throw error;
+            }
             if (now() >= deadline) {
                 throw new HookStartupError(
                     "readiness",
                     "Timed out waiting for control socket readiness",
                 );
             }
-            await sleep(lockPollMs);
+            await sleep(LOCK_POLL_MS);
         }
     }
 };
@@ -583,7 +573,12 @@ export const runHook = async (options: HookStartupOptions = {}): Promise<HookSta
     const sleep = options.sleep ?? delay;
     const token = options.token ?? randomUUID;
     const path = control.controlSocketPath(environment);
-    const deadline = now() + controlReadinessMs;
+    const deadline = now() + CONTROL_READINESS_MS;
+    await invokeWithinDeadline(
+        () => control.prepareControlSocketDirectory(path),
+        deadline,
+        now,
+    );
 
     try {
         const remaining = deadline - now();
@@ -595,7 +590,10 @@ export const runHook = async (options: HookStartupOptions = {}): Promise<HookSta
         }
         await control.notifyControl(path, notification, remaining);
         return { _tag: "Notified", openedPane: false };
-    } catch {
+    } catch (error) {
+        if (!(error instanceof ControlUnavailable)) {
+            throw error;
+        }
         if (now() >= deadline) {
             throw new HookStartupError(
                 "readiness",
@@ -626,7 +624,10 @@ export const runHook = async (options: HookStartupOptions = {}): Promise<HookSta
         try {
             await control.notifyControl(path, notification, remaining);
             return { _tag: "Notified", openedPane: false };
-        } catch {
+        } catch (error) {
+            if (!(error instanceof ControlUnavailable)) {
+                throw error;
+            }
             // Recheck under the lock before altering an orphaned socket or opening a pane.
         }
 
@@ -642,10 +643,7 @@ export const runHook = async (options: HookStartupOptions = {}): Promise<HookSta
             }
             openedPane = true;
         } catch (error) {
-            if (
-                !(error instanceof AlreadyRunning) &&
-                !(isRecord(error) && error._tag === "AlreadyRunning")
-            ) {
+            if (!(error instanceof AlreadyRunning)) {
                 throw error;
             }
         }

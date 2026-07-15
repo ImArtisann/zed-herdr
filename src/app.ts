@@ -16,6 +16,8 @@ import type { HookNotification } from "./plugin/protocol.ts";
 import { WorkspaceHintSource } from "./services/workspace-hint-source.ts";
 import { makeSyncDaemon } from "./sync/daemon.ts";
 
+const CONTROL_NOTIFICATION_QUEUE_CAPACITY = 256;
+
 const makeWorkspaceHintSourceLive = (hints: Stream.Stream<WorkspaceCwdHint>) =>
     Layer.succeed(WorkspaceHintSource, { hints });
 
@@ -40,7 +42,9 @@ export const makeAppLayer = (
 export const runDaemon = (config: AppConfig, environment: NodeJS.ProcessEnv = process.env) =>
     Effect.scoped(
         Effect.gen(function* () {
-            const notifications = yield* Queue.unbounded<HookNotification>();
+            const notifications = yield* Queue.bounded<HookNotification>(
+                CONTROL_NOTIFICATION_QUEUE_CAPACITY,
+            );
             yield* Effect.addFinalizer(() => Queue.shutdown(notifications));
             const runtime = yield* Effect.runtime<never>();
             const paneId = environment.HERDR_PANE_ID?.trim() || null;

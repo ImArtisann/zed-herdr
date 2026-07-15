@@ -49,10 +49,10 @@ export const HealthControlResponse = Schema.Struct({
 });
 export type HealthControlResponse = Schema.Schema.Type<typeof HealthControlResponse>;
 
-/** Exact failure wire response used only for malformed/oversize local requests. */
+/** Exact failure wire response: client input failures or server publish failure. */
 export const ControlFailureResponse = Schema.Struct({
     ok: Schema.Literal(false),
-    error: Schema.Literal("invalid_request", "payload_too_large"),
+    error: Schema.Literal("invalid_request", "payload_too_large", "server_failure"),
 });
 export type ControlFailureResponse = Schema.Schema.Type<typeof ControlFailureResponse>;
 

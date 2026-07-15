@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { link, lstat, open, readlink, rename, symlink, unlink } from "node:fs/promises";
-import { resolve } from "node:path";
+import { chmod, link, lstat, mkdir, open, readlink, rename, symlink, unlink } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 
 import * as Schema from "effect/Schema";
 
@@ -37,7 +37,10 @@ export class UnsafeControlSocket extends Error {
             | "symlink"
             | "changed_inode"
             | "lstat_failed"
-            | "probe_failed",
+            | "probe_failed"
+            | "not_directory"
+            | "unsafe_mode"
+            | "unsafe_parent",
     ) {
         super(`Refusing to alter unsafe control socket ${path}: ${reason}`);
         this.name = "UnsafeControlSocket";
@@ -207,7 +210,86 @@ export const probeControlSocket = async (
 export const controlSocketPath = (environment: NodeJS.ProcessEnv = process.env): string => {
     const herdRSocket = resolve(resolveHerdRSocketPath(environment));
     const digest = createHash("sha256").update(herdRSocket).digest("hex").slice(0, 16);
-    return `/tmp/zed-herdr-${currentUid()}-${digest}.sock`;
+    const configuredRuntimeBase = environment.XDG_RUNTIME_DIR?.trim();
+    const runtimeBase =
+        configuredRuntimeBase === undefined || configuredRuntimeBase.length === 0
+            ? dirname(herdRSocket)
+            : resolve(configuredRuntimeBase);
+    return join(runtimeBase, "zed-herdr", `${digest}.sock`);
+};
+
+const validateControlSocketParent = async (path: string): Promise<void> => {
+    const parent = dirname(path);
+    try {
+        const stat = await lstat(parent);
+        if (
+            stat.isSymbolicLink() ||
+            !stat.isDirectory() ||
+            stat.uid !== currentUid() ||
+            (stat.mode & 0o022) !== 0
+        ) {
+            throw new UnsafeControlSocket(path, "unsafe_parent");
+        }
+    } catch (error) {
+        if (error instanceof UnsafeControlSocket) {
+            throw error;
+        }
+        throw new UnsafeControlSocket(path, "unsafe_parent");
+    }
+};
+
+const validateControlSocketDirectory = async (path: string): Promise<boolean> => {
+    try {
+        const stat = await lstat(path);
+        if (stat.isSymbolicLink()) {
+            throw new UnsafeControlSocket(path, "symlink");
+        }
+        if (!stat.isDirectory()) {
+            throw new UnsafeControlSocket(path, "not_directory");
+        }
+        if (stat.uid !== currentUid()) {
+            throw new UnsafeControlSocket(path, "foreign_owner");
+        }
+        if ((stat.mode & 0o777) !== 0o700) {
+            await chmod(path, 0o700);
+            const tightened = await lstat(path);
+            if (
+                tightened.isSymbolicLink() ||
+                !tightened.isDirectory() ||
+                tightened.uid !== currentUid() ||
+                (tightened.mode & 0o777) !== 0o700
+            ) {
+                throw new UnsafeControlSocket(path, "unsafe_mode");
+            }
+        }
+        return true;
+    } catch (error) {
+        if (isMissing(error)) {
+            return false;
+        }
+        if (error instanceof UnsafeControlSocket) {
+            throw error;
+        }
+        throw new UnsafeControlSocket(path, "unsafe_mode");
+    }
+};
+
+/** Prepare and revalidate the owner-only directory containing a control socket. */
+export const prepareControlSocketDirectory = async (path: string): Promise<void> => {
+    const directory = dirname(path);
+    await validateControlSocketParent(directory);
+    if (!(await validateControlSocketDirectory(directory))) {
+        try {
+            await mkdir(directory, { mode: 0o700 });
+        } catch (error) {
+            if (!isAlreadyPresent(error)) {
+                throw new UnsafeControlSocket(directory, "unsafe_mode");
+            }
+        }
+    }
+    if (!(await validateControlSocketDirectory(directory))) {
+        throw new UnsafeControlSocket(directory, "unsafe_mode");
+    }
 };
 
 const lstatOwnedSocket = async (path: string): Promise<SocketIdentity | null> => {
@@ -345,6 +427,7 @@ type ConnectionState = {
     bytes: number;
     completed: boolean;
     decoder: TextDecoder;
+    scheduled: boolean;
 };
 
 const responseFor = (
@@ -376,12 +459,12 @@ const responseFor = (
     try {
         published = notificationSink.publish(decoded.right.notification);
     } catch {
-        writeAndClose(socket, { ok: false, error: "invalid_request" });
+        writeAndClose(socket, { ok: false, error: "server_failure" });
         return;
     }
     void Promise.resolve(published).then(
         () => writeAndClose(socket, { ok: true }),
-        () => writeAndClose(socket, { ok: false, error: "invalid_request" }),
+        () => writeAndClose(socket, { ok: false, error: "server_failure" }),
     );
 };
 
@@ -400,13 +483,34 @@ export const startControlServer = async (
     }
     const daemon = daemonResult.right;
 
+    await prepareControlSocketDirectory(options.path);
     await prepareControlSocket(options.path);
 
     const listener = (() => {
+        const processBufferedRequest = (socket: Bun.Socket<ConnectionState>): void => {
+            if (socket.data.completed) {
+                return;
+            }
+            const newline = socket.data.buffer.indexOf("\n");
+            if (newline < 0 || socket.data.buffer.slice(newline + 1).length > 0) {
+                socket.data.completed = true;
+                writeAndClose(socket, { ok: false, error: "invalid_request" });
+                return;
+            }
+            const frame = socket.data.buffer.slice(0, newline).replace(/\r$/, "");
+            if (textEncoder.encode(frame).byteLength > CONTROL_SOCKET_MAX_BYTES) {
+                socket.data.completed = true;
+                writeAndClose(socket, { ok: false, error: "payload_too_large" });
+                return;
+            }
+            socket.data.completed = true;
+            responseFor(frame, options.notifications, daemon, socket);
+        };
         const priorUmask = process.umask(0o177);
         try {
             return Bun.listen<ConnectionState>({
                 unix: options.path,
+                allowHalfOpen: true,
                 socket: {
                     open(socket) {
                         socket.data = {
@@ -414,6 +518,7 @@ export const startControlServer = async (
                             bytes: 0,
                             completed: false,
                             decoder: new TextDecoder("utf-8", { fatal: true }),
+                            scheduled: false,
                         };
                     },
                     data(socket, chunk) {
@@ -430,33 +535,48 @@ export const startControlServer = async (
                             writeAndClose(socket, { ok: false, error: "invalid_request" });
                             return;
                         }
+
                         const newline = socket.data.buffer.indexOf("\n");
-                        if (newline < 0) {
-                            if (
-                                socket.data.bytes >
-                                CONTROL_SOCKET_MAX_BYTES +
-                                    (socket.data.buffer.endsWith("\r") ? 1 : 0)
-                            ) {
+                        if (newline >= 0) {
+                            if (socket.data.buffer.slice(newline + 1).length > 0) {
+                                socket.data.completed = true;
+                                writeAndClose(socket, { ok: false, error: "invalid_request" });
+                                return;
+                            }
+                            const frame = socket.data.buffer.slice(0, newline).replace(/\r$/, "");
+                            if (textEncoder.encode(frame).byteLength > CONTROL_SOCKET_MAX_BYTES) {
                                 socket.data.completed = true;
                                 writeAndClose(socket, { ok: false, error: "payload_too_large" });
+                                return;
+                            }
+                            if (!socket.data.scheduled) {
+                                socket.data.scheduled = true;
+                                setImmediate(() => processBufferedRequest(socket));
                             }
                             return;
                         }
 
-                        if (socket.data.buffer.slice(newline + 1).length > 0) {
+                        if (
+                            socket.data.bytes >
+                            CONTROL_SOCKET_MAX_BYTES +
+                                (socket.data.buffer.endsWith("\r") ? 1 : 0)
+                        ) {
+                            socket.data.completed = true;
+                            writeAndClose(socket, { ok: false, error: "payload_too_large" });
+                        }
+                    },
+                    end(socket) {
+                        if (socket.data.completed) {
+                            return;
+                        }
+                        try {
+                            socket.data.buffer += socket.data.decoder.decode();
+                        } catch {
                             socket.data.completed = true;
                             writeAndClose(socket, { ok: false, error: "invalid_request" });
                             return;
                         }
-                        const frame = socket.data.buffer.slice(0, newline).replace(/\r$/, "");
-                        if (textEncoder.encode(frame).byteLength > CONTROL_SOCKET_MAX_BYTES) {
-                            socket.data.completed = true;
-                            writeAndClose(socket, { ok: false, error: "payload_too_large" });
-                            return;
-                        }
-
-                        socket.data.completed = true;
-                        responseFor(frame, options.notifications, daemon, socket);
+                        processBufferedRequest(socket);
                     },
                 },
             });
@@ -604,11 +724,80 @@ const requestControl = async (
             socket?.terminate();
             finish(() => rejectResponse(new ControlUnavailable(path, "timeout")));
         }, timeoutMs);
+        const finishResponse = (
+            client: Bun.Socket<undefined>,
+            incompleteIsUnavailable: boolean,
+        ): void => {
+            if (settled) {
+                return;
+            }
+            try {
+                buffer += decoder.decode();
+            } catch {
+                finish(() => rejectResponse(new ControlProtocolError(path, "invalid UTF-8")));
+                client.terminate();
+                return;
+            }
+            const newline = buffer.indexOf("\n");
+            if (newline < 0) {
+                finish(() =>
+                    rejectResponse(
+                        incompleteIsUnavailable
+                            ? new ControlUnavailable(path, "read")
+                            : new ControlProtocolError(path, "invalid response framing"),
+                    ),
+                );
+                client.terminate();
+                return;
+            }
+            if (buffer.slice(newline + 1).length > 0) {
+                finish(() =>
+                    rejectResponse(new ControlProtocolError(path, "invalid response framing")),
+                );
+                client.terminate();
+                return;
+            }
+            const frame = buffer.slice(0, newline).replace(/\r$/, "");
+            if (textEncoder.encode(frame).byteLength > CONTROL_SOCKET_MAX_BYTES) {
+                finish(() =>
+                    rejectResponse(new ControlProtocolError(path, "response exceeds 64KiB")),
+                );
+                client.terminate();
+                return;
+            }
+            let parsed: unknown;
+            try {
+                parsed = JSON.parse(frame);
+            } catch {
+                finish(() => rejectResponse(new ControlProtocolError(path, "invalid JSON")));
+                client.terminate();
+                return;
+            }
+            if (!isExactControlResponse(parsed)) {
+                finish(() =>
+                    rejectResponse(new ControlProtocolError(path, "unexpected response shape")),
+                );
+                client.terminate();
+                return;
+            }
+            const decoded = Schema.decodeUnknownEither(ControlResponse)(parsed);
+            if (decoded._tag === "Left") {
+                finish(() => rejectResponse(new ControlProtocolError(path, "invalid response")));
+                client.terminate();
+                return;
+            }
+            finish(() => resolveResponse(decoded.right));
+            client.terminate();
+        };
 
         void Bun.connect({
             unix: path,
+            allowHalfOpen: true,
             socket: {
                 data(client, chunk) {
+                    if (settled) {
+                        return;
+                    }
                     bytes += chunk.byteLength;
                     try {
                         buffer += decoder.decode(chunk, { stream: true });
@@ -619,9 +808,20 @@ const requestControl = async (
                         client.terminate();
                         return;
                     }
+
                     const newline = buffer.indexOf("\n");
-                    if (newline < 0) {
-                        if (bytes > CONTROL_SOCKET_MAX_BYTES + (buffer.endsWith("\r") ? 1 : 0)) {
+                    if (newline >= 0) {
+                        if (buffer.slice(newline + 1).length > 0) {
+                            finish(() =>
+                                rejectResponse(
+                                    new ControlProtocolError(path, "trailing response bytes"),
+                                ),
+                            );
+                            client.terminate();
+                            return;
+                        }
+                        const frame = buffer.slice(0, newline).replace(/\r$/, "");
+                        if (textEncoder.encode(frame).byteLength > CONTROL_SOCKET_MAX_BYTES) {
                             finish(() =>
                                 rejectResponse(
                                     new ControlProtocolError(path, "response exceeds 64KiB"),
@@ -631,54 +831,27 @@ const requestControl = async (
                         }
                         return;
                     }
-                    const frame = buffer.slice(0, newline).replace(/\r$/, "");
-                    if (textEncoder.encode(frame).byteLength > CONTROL_SOCKET_MAX_BYTES) {
+
+                    if (bytes > CONTROL_SOCKET_MAX_BYTES + (buffer.endsWith("\r") ? 1 : 0)) {
                         finish(() =>
                             rejectResponse(
                                 new ControlProtocolError(path, "response exceeds 64KiB"),
                             ),
                         );
                         client.terminate();
-                        return;
                     }
-                    let parsed: unknown;
-                    try {
-                        parsed = JSON.parse(frame);
-                    } catch {
-                        finish(() =>
-                            rejectResponse(new ControlProtocolError(path, "invalid JSON")),
-                        );
-                        client.terminate();
-                        return;
-                    }
-                    if (!isExactControlResponse(parsed)) {
-                        finish(() =>
-                            rejectResponse(
-                                new ControlProtocolError(path, "unexpected response shape"),
-                            ),
-                        );
-                        client.terminate();
-                        return;
-                    }
-                    const decoded = Schema.decodeUnknownEither(ControlResponse)(parsed);
-                    if (decoded._tag === "Left") {
-                        finish(() =>
-                            rejectResponse(new ControlProtocolError(path, "invalid response")),
-                        );
-                        client.terminate();
-                        return;
-                    }
-                    finish(() => resolveResponse(decoded.right));
-                    client.terminate();
                 },
-                close(_client, closeError) {
+                end(client) {
+                    finishResponse(client, false);
+                },
+                close(client, closeError) {
                     if (closeError !== null && closeError !== undefined) {
                         finish(() =>
                             rejectResponse(new ControlUnavailable(path, "read", closeError)),
                         );
-                    } else {
-                        finish(() => rejectResponse(new ControlUnavailable(path, "read")));
+                        return;
                     }
+                    finishResponse(client, true);
                 },
                 error(_client, socketError) {
                     finish(() => rejectResponse(new ControlUnavailable(path, "read", socketError)));

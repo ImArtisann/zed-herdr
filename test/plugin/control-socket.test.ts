@@ -1,8 +1,20 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { link, lstat, mkdtemp, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import {
+    chmod,
+    chown,
+    link,
+    lstat,
+    mkdir,
+    mkdtemp,
+    readFile,
+    rm,
+    symlink,
+    unlink,
+    writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import * as Schema from "effect/Schema";
 
 import { HookNotification } from "../../src/plugin/protocol.ts";
@@ -16,6 +28,7 @@ import {
     healthControl,
     notifyControl,
     prepareControlSocket,
+    prepareControlSocketDirectory,
     probeControlSocket,
     startControlServer,
 } from "../../src/plugin/control.ts";
@@ -27,8 +40,8 @@ const rawRequest = async (
     chunks: ReadonlyArray<string | Uint8Array>,
 ): Promise<string> =>
     new Promise<string>((resolveResponse, rejectResponse) => {
-        const decoder = new TextDecoder();
-        const requestChunks = chunks.flatMap((chunk) => {
+        const decoder = new TextDecoder("utf-8", { fatal: true });
+        const requestGroups = chunks.map((chunk) => {
             const bytes = typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk;
             const parts: Array<Uint8Array> = [];
             for (let offset = 0; offset < bytes.byteLength; offset += 8 * 1024) {
@@ -37,6 +50,7 @@ const rawRequest = async (
             return parts;
         });
         let buffer = "";
+        let groupIndex = 0;
         let chunkIndex = 0;
         let chunkOffset = 0;
         let settled = false;
@@ -46,36 +60,60 @@ const rawRequest = async (
                 operation();
             }
         };
+        const finishResponse = (): void => {
+            try {
+                buffer += decoder.decode();
+            } catch (error) {
+                finish(() => rejectResponse(error));
+                return;
+            }
+            if (!buffer.endsWith("\n")) {
+                finish(() => rejectResponse(new Error("control socket ended without a response frame")));
+                return;
+            }
+            finish(() => resolveResponse(buffer.slice(0, -1)));
+        };
         const writeRequest = (socket: Bun.Socket<undefined>): void => {
-            while (chunkIndex < requestChunks.length) {
-                const chunk = requestChunks[chunkIndex];
-                if (chunk === undefined) {
+            while (groupIndex < requestGroups.length) {
+                const requestGroup = requestGroups[groupIndex];
+                if (requestGroup === undefined) {
                     return;
                 }
-                const written = socket.write(chunk, chunkOffset);
-                if (written < 0) {
-                    finish(() => rejectResponse(new Error("control socket closed while writing")));
-                    return;
+                while (chunkIndex < requestGroup.length) {
+                    const chunk = requestGroup[chunkIndex];
+                    if (chunk === undefined) {
+                        return;
+                    }
+                    const written = socket.write(chunk, chunkOffset);
+                    if (written < 0) {
+                        finish(() => rejectResponse(new Error("control socket closed while writing")));
+                        return;
+                    }
+                    chunkOffset += written;
+                    if (chunkOffset < chunk.byteLength) {
+                        return;
+                    }
+                    chunkIndex += 1;
+                    chunkOffset = 0;
                 }
-                chunkOffset += written;
-                if (chunkOffset < chunk.byteLength) {
-                    return;
-                }
-                chunkIndex += 1;
-                chunkOffset = 0;
+                groupIndex += 1;
+                chunkIndex = 0;
             }
         };
 
         void Bun.connect({
             unix: path,
+            allowHalfOpen: true,
             socket: {
-                data(socket, chunk) {
-                    buffer += decoder.decode(chunk, { stream: true });
-                    const newline = buffer.indexOf("\n");
-                    if (newline >= 0) {
-                        finish(() => resolveResponse(buffer.slice(0, newline)));
-                        socket.end();
+                data(_socket, chunk) {
+                    try {
+                        buffer += decoder.decode(chunk, { stream: true });
+                    } catch (error) {
+                        finish(() => rejectResponse(error));
                     }
+                },
+                end() {
+                    finishResponse();
                 },
                 drain(socket) {
                     writeRequest(socket);
@@ -84,9 +122,7 @@ const rawRequest = async (
                     if (error !== null && error !== undefined) {
                         finish(() => rejectResponse(error));
                     } else {
-                        finish(() =>
-                            rejectResponse(new Error("control socket closed before responding")),
-                        );
+                        finishResponse();
                     }
                 },
                 error(_socket, error) {
@@ -106,7 +142,7 @@ const withControlServer = async (
         path,
         paneId: "daemon-pane",
         notifications: {
-            publish(notification) {
+            async publish(notification) {
                 notifications.push(notification);
             },
         },
@@ -120,17 +156,123 @@ const withControlServer = async (
     }
 };
 
-test("derives a uid-and-resolved-HerdR-socket control path", () => {
+test("derives XDG and HerdR-directory control socket paths", () => {
     const herdRSocket = "/tmp/../tmp/herdr/session.sock";
-    const digest = createHash("sha256").update(resolve(herdRSocket)).digest("hex").slice(0, 16);
+    const resolvedHerdRSocket = resolve(herdRSocket);
+    const digest = createHash("sha256").update(resolvedHerdRSocket).digest("hex").slice(0, 16);
+
+    expect(
+        controlSocketPath({
+            HERDR_SOCKET_PATH: herdRSocket,
+            XDG_RUNTIME_DIR: "/runtime/user",
+        }),
+    ).toBe(join("/runtime/user", "zed-herdr", `${digest}.sock`));
+    expect(controlSocketPath({ HERDR_SOCKET_PATH: herdRSocket })).toBe(
+        join(dirname(resolvedHerdRSocket), "zed-herdr", `${digest}.sock`),
+    );
+});
+
+test("creates and tightens the owner-only control socket directory", async () => {
+    const root = await makeTemporaryDirectory();
+    const parent = join(root, "runtime");
+    const directory = join(parent, "zed-herdr");
+    const path = join(directory, "control.sock");
     const uid = process.getuid?.();
-    if (uid === undefined) {
-        throw new Error("control sockets require a POSIX uid");
+
+    try {
+        await mkdir(parent, { mode: 0o700 });
+        await chmod(parent, 0o700);
+        await prepareControlSocketDirectory(path);
+        expect((await lstat(directory)).isDirectory()).toBe(true);
+        expect((await lstat(directory)).mode & 0o777).toBe(0o700);
+        if (uid !== undefined) {
+            expect((await lstat(directory)).uid).toBe(uid);
+        }
+
+        await chmod(directory, 0o755);
+        await prepareControlSocketDirectory(path);
+        expect((await lstat(directory)).mode & 0o777).toBe(0o700);
+    } finally {
+        await rm(root, { force: true, recursive: true });
+    }
+});
+
+test("rejects control directories beneath unsafe parents and unsafe directory entries", async () => {
+    const root = await makeTemporaryDirectory();
+    const unsafeParent = join(root, "unsafe-parent");
+    const safeChild = join(unsafeParent, "zed-herdr");
+    const safeParent = join(root, "safe-parent");
+    const target = join(root, "target");
+    const symlinkedChild = join(safeParent, "zed-herdr");
+
+    try {
+        await mkdir(unsafeParent, { mode: 0o777 });
+        await chmod(unsafeParent, 0o777);
+        await mkdir(safeChild, { mode: 0o700 });
+        await chmod(safeChild, 0o700);
+        await expect(
+            prepareControlSocketDirectory(join(safeChild, "existing-child.sock")),
+        ).rejects.toMatchObject({
+            _tag: "UnsafeControlSocket",
+            reason: "unsafe_parent",
+        } satisfies Partial<UnsafeControlSocket>);
+        await rm(safeChild, { force: true, recursive: true });
+        await expect(
+            prepareControlSocketDirectory(join(unsafeParent, "zed-herdr", "missing-child.sock")),
+        ).rejects.toMatchObject({
+            _tag: "UnsafeControlSocket",
+            reason: "unsafe_parent",
+        } satisfies Partial<UnsafeControlSocket>);
+
+        await mkdir(safeParent, { mode: 0o700 });
+        await chmod(safeParent, 0o700);
+        await mkdir(target, { mode: 0o700 });
+        await chmod(target, 0o700);
+        await symlink(target, symlinkedChild);
+        await expect(
+            prepareControlSocketDirectory(join(symlinkedChild, "symlink.sock")),
+        ).rejects.toMatchObject({
+            _tag: "UnsafeControlSocket",
+            reason: "symlink",
+        } satisfies Partial<UnsafeControlSocket>);
+        await unlink(symlinkedChild);
+        await writeFile(symlinkedChild, "not a directory", { mode: 0o600 });
+        await expect(
+            prepareControlSocketDirectory(join(symlinkedChild, "file.sock")),
+        ).rejects.toMatchObject({
+            _tag: "UnsafeControlSocket",
+            reason: "not_directory",
+        } satisfies Partial<UnsafeControlSocket>);
+    } finally {
+        await rm(root, { force: true, recursive: true });
+    }
+});
+
+test("rejects a foreign-owned control socket directory when ownership can be changed", async () => {
+    const uid = process.getuid?.();
+    if (uid !== 0) {
+        return;
     }
 
-    expect(controlSocketPath({ HERDR_SOCKET_PATH: herdRSocket })).toBe(
-        `/tmp/zed-herdr-${uid}-${digest}.sock`,
-    );
+    const root = await makeTemporaryDirectory();
+    const parent = join(root, "runtime");
+    const directory = join(parent, "zed-herdr");
+    const path = join(directory, "control.sock");
+
+    try {
+        await mkdir(parent, { mode: 0o700 });
+        await chmod(parent, 0o700);
+        await mkdir(directory, { mode: 0o700 });
+        await chmod(directory, 0o700);
+        await chown(directory, 1, -1);
+        await expect(prepareControlSocketDirectory(path)).rejects.toMatchObject({
+            _tag: "UnsafeControlSocket",
+            reason: "foreign_owner",
+        } satisfies Partial<UnsafeControlSocket>);
+    } finally {
+        await chown(directory, uid, -1).catch(() => undefined);
+        await rm(root, { force: true, recursive: true });
+    }
 });
 
 test("returns exact health and notify responses without trusting client pane fields", async () => {
@@ -153,6 +295,12 @@ test("returns exact health and notify responses without trusting client pane fie
         expect(decodedHealth.daemon.paneId).toBe("daemon-pane");
         expect(decodedHealth.daemon.pid).toBe(process.pid);
         expect(decodedHealth.daemon.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+        expect(
+            JSON.parse(
+                await rawRequest(path, [JSON.stringify({ type: "health" }), "\r\n"]),
+            ),
+        ).toEqual(decodedHealth);
 
         const notification = Schema.decodeUnknownSync(HookNotification)({
             workspaceId: "workspace-1",
@@ -224,7 +372,8 @@ test("uses owner-only mode and rejects invalid or oversized frames", async () =>
                 `${JSON.stringify({
                     type: "notify",
                     notification: { workspaceId: "workspace", cwd: "/repo" },
-                })}\nextra`,
+                })}\n`,
+                "extra",
             ]),
         ).toBe('{"ok":false,"error":"invalid_request"}');
         expect(notifications).toEqual([]);
@@ -253,7 +402,36 @@ test("rejects a synchronously failing notification publisher", async () => {
                 }),
                 "\n",
             ]),
-        ).toBe('{"ok":false,"error":"invalid_request"}');
+        ).toBe('{"ok":false,"error":"server_failure"}');
+    } finally {
+        await server.close();
+        await rm(directory, { force: true, recursive: true });
+    }
+});
+
+test("returns server_failure for an asynchronously rejecting notification publisher", async () => {
+    const directory = await makeTemporaryDirectory();
+    const path = `${directory}/publisher-async-failure.sock`;
+    const server = await startControlServer({
+        path,
+        paneId: null,
+        notifications: {
+            async publish() {
+                throw new Error("publisher failure");
+            },
+        },
+    });
+
+    try {
+        expect(
+            await rawRequest(path, [
+                JSON.stringify({
+                    type: "notify",
+                    notification: { workspaceId: "workspace", cwd: "/repo" },
+                }),
+                "\n",
+            ]),
+        ).toBe('{"ok":false,"error":"server_failure"}');
     } finally {
         await server.close();
         await rm(directory, { force: true, recursive: true });
@@ -269,7 +447,7 @@ test("rejects an oversized daemon pane id before binding", async () => {
             startControlServer({
                 path,
                 paneId: "x".repeat(4_097),
-                notifications: { publish() {} },
+                notifications: { async publish() {} },
             }),
         ).rejects.toBeInstanceOf(ControlProtocolError);
     } finally {
@@ -280,7 +458,11 @@ test("rejects an oversized daemon pane id before binding", async () => {
 test("refuses live and unsafe paths while recovering an unbound socket pathname", async () => {
     const directory = await makeTemporaryDirectory();
     const path = `${directory}/control.sock`;
-    const live = await startControlServer({ path, paneId: null, notifications: { publish() {} } });
+    const live = await startControlServer({
+        path,
+        paneId: null,
+        notifications: { async publish() {} },
+    });
 
     try {
         await expect(prepareControlSocket(path)).rejects.toBeInstanceOf(AlreadyRunning);
@@ -292,7 +474,7 @@ test("refuses live and unsafe paths while recovering an unbound socket pathname"
     const liveTargetServer = await startControlServer({
         path: liveTarget,
         paneId: null,
-        notifications: { publish() {} },
+        notifications: { async publish() {} },
     });
     await symlink(liveTarget, path);
     try {
@@ -415,6 +597,29 @@ test("rejects a newline-terminated oversized control response", async () => {
     }
 });
 
+test("rejects response bytes written after a completed response frame", async () => {
+    const directory = await makeTemporaryDirectory();
+    const path = `${directory}/trailing-response.sock`;
+    const listener = Bun.listen({
+        unix: path,
+        allowHalfOpen: true,
+        socket: {
+            data(socket) {
+                socket.write('{"ok":false,"error":"invalid_request"}\n');
+                socket.write("extra");
+                socket.end();
+            },
+        },
+    });
+
+    try {
+        await expect(healthControl(path)).rejects.toBeInstanceOf(ControlProtocolError);
+    } finally {
+        listener.stop(true);
+        await rm(directory, { force: true, recursive: true });
+    }
+});
+
 test("rejects a notify acknowledgement carrying malformed daemon fields", async () => {
     const directory = await makeTemporaryDirectory();
     const path = `${directory}/malformed-notify.sock`;
@@ -447,7 +652,7 @@ test("finalization never unlinks a replacement inode", async () => {
     const server = await startControlServer({
         path,
         paneId: null,
-        notifications: { publish() {} },
+        notifications: { async publish() {} },
     });
 
     await unlink(path);
@@ -465,7 +670,7 @@ test("finalization restores a symlink replacement without dereferencing it", asy
     const server = await startControlServer({
         path,
         paneId: null,
-        notifications: { publish() {} },
+        notifications: { async publish() {} },
     });
 
     await unlink(path);

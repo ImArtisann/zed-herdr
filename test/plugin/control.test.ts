@@ -12,6 +12,7 @@ import {
     CONTROL_DAEMON_IDENTITY,
     controlSocketPath,
     notifyControl,
+    prepareControlSocketDirectory,
     startControlServer,
 } from "../../src/plugin/control.ts";
 import type { ControlServer } from "../../src/plugin/control.ts";
@@ -50,6 +51,7 @@ const hookEnvironment = (herdrSocket: string): NodeJS.ProcessEnv => ({
 });
 
 const createOrphanedSocket = async (path: string): Promise<void> => {
+    await prepareControlSocketDirectory(path);
     const child = Bun.spawn({
         cmd: [
             process.execPath,
@@ -136,7 +138,7 @@ test("health CLI reports the real daemon and rejects absent or invalid control s
         const started = await startControlServer({
             path,
             paneId: "injected-daemon-pane",
-            notifications: { publish() {} },
+            notifications: { async publish() {} },
         });
         server = started;
 
@@ -181,7 +183,7 @@ test("direct daemon startup replaces an orphaned socket and cleans its bound ino
         server = await startControlServer({
             path,
             paneId: null,
-            notifications: { publish() {} },
+            notifications: { async publish() {} },
         });
 
         const bound = await lstat(path);
@@ -218,7 +220,7 @@ test("hook recovers an orphan, opens one daemon, waits for readiness, and publis
                     path,
                     paneId: "hook-created-pane",
                     notifications: {
-                        publish(notification) {
+                        async publish(notification) {
                             notifications.push(notification);
                         },
                     },
@@ -271,8 +273,8 @@ test("buffers a control notification received before hint stream consumption", a
             path,
             paneId: null,
             notifications: {
-                publish(notification) {
-                    return Effect.runPromise(Queue.offer(queue, notification).pipe(Effect.asVoid));
+                async publish(notification) {
+                    await Effect.runPromise(Queue.offer(queue, notification).pipe(Effect.asVoid));
                 },
             },
         });
