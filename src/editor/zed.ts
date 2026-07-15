@@ -112,6 +112,13 @@ const runCommand = (
                 Effect.mapError((error): CommandFailure => ({ _tag: "ProcessFailure", error })),
                 Effect.forkScoped,
             );
+            const stdoutFiber = yield* process.stdout.pipe(
+                Stream.runDrain,
+                Effect.mapError(
+                    (error): CommandFailure => ({ _tag: "ProcessFailure", error }),
+                ),
+                Effect.forkScoped,
+            );
             const exitCode = yield* process.exitCode.pipe(
                 Effect.mapError((error): CommandFailure => ({ _tag: "ProcessFailure", error })),
                 Effect.timeoutOption(commandTimeout),
@@ -125,14 +132,18 @@ const runCommand = (
                             (error): CommandFailure => ({ _tag: "ProcessFailure", error }),
                         ),
                     );
-                yield* Fiber.join(stderrFiber);
+                yield* Effect.all([Fiber.join(stdoutFiber), Fiber.join(stderrFiber)], {
+                    concurrency: "unbounded",
+                });
                 return yield* Effect.fail({
                     _tag: "Timeout",
                     stderr: yield* Ref.get(stderrTail),
                 } satisfies AttemptFailure);
             }
 
-            yield* Fiber.join(stderrFiber);
+            yield* Effect.all([Fiber.join(stdoutFiber), Fiber.join(stderrFiber)], {
+                concurrency: "unbounded",
+            });
             return {
                 exitCode: exitCode.value,
                 stderr: yield* Ref.get(stderrTail),

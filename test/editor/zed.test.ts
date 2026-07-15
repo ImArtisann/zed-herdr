@@ -24,8 +24,10 @@ interface ProcessPlan {
     readonly exitCode?: number;
     readonly exitEffect?: Effect.Effect<CommandExecutor.ExitCode, PlatformError.PlatformError>;
     readonly onKill?: () => void;
+    readonly onStdoutChunk?: (chunk: Uint8Array) => void;
     readonly startError?: PlatformError.PlatformError;
     readonly stderr?: ReadonlyArray<Uint8Array>;
+    readonly stdout?: ReadonlyArray<Uint8Array>;
 }
 
 interface ExecutorHarness {
@@ -93,7 +95,13 @@ const makeExecutor = (plans: ReadonlyArray<ProcessPlan>): ExecutorHarness => {
                     }),
                 stderr: Stream.fromIterable(plan.stderr ?? []),
                 stdin: Sink.drain,
-                stdout: Stream.empty,
+                stdout: Stream.fromIterable(plan.stdout ?? []).pipe(
+                    Stream.tap((chunk) =>
+                        Effect.sync(() => {
+                            plan.onStdoutChunk?.(chunk);
+                        }),
+                    ),
+                ),
             } as unknown as CommandExecutor.Process;
             runningStates.push(() => running);
             return Effect.addFinalizer(() =>
@@ -126,6 +134,23 @@ test("uses the configured executable for exact shell-free Zed argv", async () =>
     expect(harness.calls).toEqual([
         { command: "/tools/zed", args: ["-e", "/repos/alpha"], shell: false },
     ]);
+});
+
+test("drains every stdout chunk before a successful command completes", async () => {
+    const encoder = new TextEncoder();
+    const stdout = [encoder.encode("opened "), encoder.encode("workspace\n")];
+    const drained: Array<Uint8Array> = [];
+    const harness = makeExecutor([
+        {
+            stdout,
+            onStdoutChunk: (chunk) => drained.push(chunk),
+        },
+    ]);
+
+    await withAdapter(harness, (adapter) => adapter.ensureProject("/repos/alpha"), "/tools/zed");
+
+    expect(drained).toEqual(stdout);
+    expect(harness.kills).toEqual([]);
 });
 
 test("uses PATH-resolved zed by default without probes or shell commands", async () => {
