@@ -299,23 +299,27 @@ export const makeSyncDaemon = Effect.gen(function* () {
                 return;
             }
 
-            yield* gateGeneration(cache, trigger.generation);
-            yield* Ref.update(cache, (state) =>
+            const recorded = yield* Ref.modify(cache, (state) =>
                 state.latestLiveGeneration === trigger.generation
-                    ? {
-                          ...state,
-                          lastSuccessful: successful,
-                          lastSynchronizedAt: Number(now) / 1_000_000,
-                      }
-                    : state,
+                    ? [
+                          true,
+                          {
+                              ...state,
+                              lastSuccessful: successful,
+                              lastSynchronizedAt: Number(now) / 1_000_000,
+                          },
+                      ]
+                    : [false, state],
             );
-            yield* logSync("info", "workspace_sync_succeeded", {
-                workspaceId: workspace.workspaceId,
-                workspace: workspace.name,
-                path: project.gitRoot,
-                operation: "focus_project",
-                elapsedMs: elapsedMillis(trigger.ingressAt, now),
-            });
+            if (recorded) {
+                yield* logSync("info", "workspace_sync_succeeded", {
+                    workspaceId: workspace.workspaceId,
+                    workspace: workspace.name,
+                    path: project.gitRoot,
+                    operation: "focus_project",
+                    elapsedMs: elapsedMillis(trigger.ingressAt, now),
+                });
+            }
         }).pipe(
             Effect.catchTag("StaleWorkspaceGeneration", () => Effect.void),
             Effect.catchAllCause((cause) =>

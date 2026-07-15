@@ -739,6 +739,71 @@ test("stale ensure completion cannot record a root or synchronization time", asy
     });
 });
 
+test("stale focus completion cannot record or log success", async () => {
+    await withTemporaryDirectory(async (directory) => {
+        const repo = join(directory, "repo");
+        await initializeRepository(repo);
+        const gate = await Effect.runPromise(Deferred.make<void>());
+        const focusCompleted = await Effect.runPromise(Deferred.make<void>());
+        await withDaemon(
+            (harness) => {
+                queueSnapshot(
+                    harness,
+                    1,
+                    snapshot("workspace", [workspace("workspace", repo)]),
+                );
+                return emitInvalidated(harness, 1).pipe(
+                    Effect.zipRight(advanceDebounce),
+                    Effect.zipRight(awaitSnapshot(harness)),
+                    Effect.zipRight(awaitCalls(harness, 2)),
+                    Effect.zipRight(
+                        Ref.update(harness.daemon.cache, (cache) => ({
+                            ...cache,
+                            latestLiveGeneration: generation(2),
+                        })),
+                    ),
+                    Effect.zipRight(Queue.takeAll(harness.logEvents)),
+                    Effect.zipRight(Deferred.succeed(gate, undefined)),
+                    Effect.zipRight(Deferred.await(focusCompleted)),
+                    Effect.zipRight(
+                        Effect.sync(() => {
+                            queueSnapshot(harness, 2, snapshot(null, []));
+                        }),
+                    ),
+                    Effect.zipRight(emitInvalidated(harness, 2)),
+                    Effect.zipRight(advanceDebounce),
+                    Effect.zipRight(awaitSnapshot(harness)),
+                    Effect.zipRight(Queue.takeAll(harness.logEvents)),
+                    Effect.tap((logs) =>
+                        Effect.sync(() => {
+                            expect(logs).not.toContainEqual(
+                                expect.objectContaining({
+                                    message: "workspace_sync_succeeded",
+                                    annotations: expect.objectContaining({
+                                        operation: "focus_project",
+                                    }),
+                                }),
+                            );
+                        }),
+                    ),
+                    Effect.zipRight(Ref.get(harness.daemon.cache)),
+                    Effect.tap((cache) =>
+                        Effect.sync(() => {
+                            expect(cache.lastSuccessful).toBeNull();
+                        }),
+                    ),
+                );
+            },
+            {
+                focusProject: () =>
+                    Effect.uninterruptible(Deferred.await(gate)).pipe(
+                        Effect.zipRight(Deferred.succeed(focusCompleted, undefined)),
+                    ),
+            },
+        );
+    });
+});
+
 test("repeats ensure and focus for a reused root after a generation change", async () => {
     await withTemporaryDirectory(async (directory) => {
         const repo = join(directory, "repo");
