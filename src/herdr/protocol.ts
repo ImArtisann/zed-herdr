@@ -245,7 +245,7 @@ export type LifecycleEventName = LifecycleEventData["type"];
 
 /** Returns false for unrelated events before schema decoding is attempted. */
 export const isLifecycleEventName = (event: unknown): event is LifecycleEventName =>
-    typeof event === "string" && event in lifecycleEventNames;
+    typeof event === "string" && Object.hasOwn(lifecycleEventNames, event);
 
 /** Required envelopes keep the envelope event and data.type coupled. */
 export const LifecycleEventEnvelope = Schema.Union(

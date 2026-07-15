@@ -19,6 +19,8 @@ import type {
 import type { SyncDaemon } from "../../src/sync/daemon.ts";
 import type { HerdRClientService } from "../../src/herdr/client.ts";
 import { makeHerdRClient, resolveHerdRSocketPath } from "../../src/herdr/client.ts";
+import { MAX_NDJSON_PARTIAL_FRAME_BYTES, NdjsonDecoder } from "../../src/herdr/ndjson.ts";
+import { isLifecycleEventName } from "../../src/herdr/protocol.ts";
 import { EditorAdapter } from "../../src/services/editor-adapter.ts";
 import { WorkspaceHintSource } from "../../src/services/workspace-hint-source.ts";
 import { WorkspaceSource } from "../../src/services/workspace-source.ts";
@@ -150,6 +152,12 @@ const takeClosedMethod = async (
         }
     }
 };
+const flushMicrotasks = async (): Promise<void> => {
+    for (let index = 0; index < 8; index += 1) {
+        await Promise.resolve();
+    }
+};
+
 
 const takeEvents = (client: HerdRClientService, count: number) =>
     Effect.runPromise(Stream.runCollect(client.events.pipe(Stream.take(count)))).then(
@@ -375,11 +383,15 @@ test("incrementally decodes split UTF-8 and a trailing S2 frame", async () => {
     }
 });
 
-test("skips malformed frames, ignores pre-ack lifecycle replay, and preserves generation tags", async () => {
+test("skips malformed frames, ignores pre-ack lifecycle replay, and emits exactly three post-ack events", async () => {
     const server = await makeServer();
+    vi.useFakeTimers();
     try {
         await withClient(server.path, async (client) => {
-            const events = takeEvents(client, 3);
+            const events = new AsyncQueue<WorkspaceSourceEvent>();
+            Effect.runFork(
+                Stream.runForEach(client.events, (event) => Effect.sync(() => events.offer(event))),
+            );
             const firstSnapshot = await server.requests.take();
             writeJson(firstSnapshot.socket, snapshotResponse(firstSnapshot.request.id));
             const subscribe = await server.requests.take();
@@ -390,14 +402,21 @@ test("skips malformed frames, ignores pre-ack lifecycle replay, and preserves ge
                 `${JSON.stringify(subscriptionStarted(subscribe.request.id))}\n${JSON.stringify({ event: "workspace_focused", data: { type: "workspace_focused" } })}\n${JSON.stringify(focusedEvent())}\n${JSON.stringify(focusedEvent())}\n`,
             );
 
-            expect(await events).toEqual([
+            expect(await Promise.all([events.take(), events.take(), events.take()])).toEqual([
                 { _tag: "Invalidated", generation: generation(1) },
                 { _tag: "Invalidated", generation: generation(1) },
                 { _tag: "Invalidated", generation: generation(1) },
             ]);
+            const fourth = Promise.race([
+                events.take().then(() => "event"),
+                new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 25)),
+            ]);
+            vi.advanceTimersByTime(25);
+            expect(await fourth).toBe("timeout");
         });
     } finally {
         await server.close();
+        vi.useRealTimers();
     }
 });
 
@@ -434,27 +453,151 @@ test("rejects matching HerdR error responses without sending another method", as
     }
 });
 
-test("retries S1 protocol failures with deterministic exponential delays capped at five seconds", async () => {
+test("grows failed bootstrap backoff and resets the next acknowledged disconnect to 100 ms", async () => {
     const server = await makeServer();
     const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
     vi.useFakeTimers();
     try {
-        await withClient(server.path, async () => {
+        await withClient(server.path, async (client) => {
             for (const delay of [100, 200, 400, 800, 1_600, 3_200, 5_000]) {
                 const request = await server.requests.take();
                 expect(request.request.method).toBe("session.snapshot");
                 writeJson(request.socket, snapshotResponse(request.request.id, { protocol: 15 }));
                 await takeClosedMethod(server, "session.snapshot");
-                await Promise.resolve();
-                await Promise.resolve();
+                await flushMicrotasks();
                 vi.advanceTimersByTime(delay);
             }
+
+            const acknowledgedSnapshot = await server.requests.take();
+            writeJson(acknowledgedSnapshot.socket, snapshotResponse(acknowledgedSnapshot.request.id));
+            const acknowledgedSubscription = await server.requests.take();
+            const lifecycle = takeEvents(client, 2);
+            writeJson(
+                acknowledgedSubscription.socket,
+                subscriptionStarted(acknowledgedSubscription.request.id),
+            );
+            acknowledgedSubscription.socket.end();
+            expect(await lifecycle).toEqual([
+                { _tag: "Invalidated", generation: generation(8) },
+                { _tag: "Disconnected", generation: generation(8) },
+            ]);
+            await takeClosedMethod(server, "events.subscribe");
+            await flushMicrotasks();
+
+            vi.advanceTimersByTime(99);
+            expect(server.requests.size).toBe(0);
+            vi.advanceTimersByTime(1);
+            expect((await server.requests.take()).request.method).toBe("session.snapshot");
         });
     } finally {
         vi.useRealTimers();
         random.mockRestore();
         await server.close();
     }
+});
+
+test("terminates a silent S1 after five seconds and reconnects after backoff", async () => {
+    const server = await makeServer();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    vi.useFakeTimers();
+    try {
+        await withClient(server.path, async () => {
+            const silentSnapshot = await server.requests.take();
+            expect(silentSnapshot.request.method).toBe("session.snapshot");
+
+            vi.advanceTimersByTime(5_000);
+            expect(await takeClosedMethod(server, "session.snapshot")).toBe(silentSnapshot.socket.data);
+            await flushMicrotasks();
+
+            vi.advanceTimersByTime(99);
+            expect(server.requests.size).toBe(0);
+            vi.advanceTimersByTime(1);
+            expect((await server.requests.take()).request.method).toBe("session.snapshot");
+        });
+    } finally {
+        vi.useRealTimers();
+        random.mockRestore();
+        await server.close();
+    }
+});
+
+test("terminates a silent subscription acknowledgement after five seconds and reconnects after backoff", async () => {
+    const server = await makeServer();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    vi.useFakeTimers();
+    try {
+        await withClient(server.path, async () => {
+            const firstSnapshot = await server.requests.take();
+            writeJson(firstSnapshot.socket, snapshotResponse(firstSnapshot.request.id));
+            const silentSubscription = await server.requests.take();
+            expect(silentSubscription.request.method).toBe("events.subscribe");
+
+            vi.advanceTimersByTime(5_000);
+            expect(await takeClosedMethod(server, "events.subscribe")).toBe(
+                silentSubscription.socket.data,
+            );
+            await flushMicrotasks();
+
+            vi.advanceTimersByTime(99);
+            expect(server.requests.size).toBe(0);
+            vi.advanceTimersByTime(1);
+            expect((await server.requests.take()).request.method).toBe("session.snapshot");
+        });
+    } finally {
+        vi.useRealTimers();
+        random.mockRestore();
+        await server.close();
+    }
+});
+
+test("clears a pending subscription acknowledgement timeout on scoped close", async () => {
+    const server = await makeServer();
+    vi.useFakeTimers();
+    let pendingTimerCount = 0;
+    try {
+        await withClient(server.path, async () => {
+            const firstSnapshot = await server.requests.take();
+            writeJson(firstSnapshot.socket, snapshotResponse(firstSnapshot.request.id));
+            const subscription = await server.requests.take();
+            expect(subscription.request.method).toBe("events.subscribe");
+            pendingTimerCount = vi.getTimerCount();
+            expect(pendingTimerCount).toBeGreaterThan(0);
+        });
+        expect(vi.getTimerCount()).toBe(pendingTimerCount - 1);
+    } finally {
+        vi.useRealTimers();
+        await server.close();
+    }
+});
+
+test("terminates the active subscription socket after a protocol failure", async () => {
+    const server = await makeServer();
+    try {
+        await withClient(server.path, async (client) => {
+            const firstSnapshot = await server.requests.take();
+            writeJson(firstSnapshot.socket, snapshotResponse(firstSnapshot.request.id));
+            const subscription = await server.requests.take();
+            writeJson(subscription.socket, subscriptionStarted(subscription.request.id));
+            expect(await takeEvents(client, 1)).toEqual([
+                { _tag: "Invalidated", generation: generation(1) },
+            ]);
+
+            writeJson(subscription.socket, snapshotResponse(subscription.request.id));
+            expect(await takeClosedMethod(server, "events.subscribe")).toBe(subscription.socket.data);
+        });
+    } finally {
+        await server.close();
+    }
+});
+
+test("rejects inherited lifecycle event names", () => {
+    expect(isLifecycleEventName("toString")).toBe(false);
+    expect(isLifecycleEventName("constructor")).toBe(false);
+});
+
+test("accepts the exported NDJSON minimum and rejects smaller partial-frame limits", () => {
+    expect(() => new NdjsonDecoder(MAX_NDJSON_PARTIAL_FRAME_BYTES)).not.toThrow();
+    expect(() => new NdjsonDecoder(MAX_NDJSON_PARTIAL_FRAME_BYTES - 1)).toThrow(RangeError);
 });
 
 test("disconnects an acknowledged generation, rejects an in-flight S2, recovers as N+1, and closes scoped sockets", async () => {

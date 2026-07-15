@@ -36,6 +36,7 @@ import {
 
 const retryInitialDelayMs = 100;
 const retryMaximumDelayMs = 5_000;
+const BOOTSTRAP_TIMEOUT_MS = 5_000;
 const maxLogCauseLength = 4_096;
 
 /** Resolve HerdR's Unix socket without probing or mutating the filesystem. */
@@ -130,8 +131,10 @@ class LiveHerdRClient implements HerdRClientService {
     readonly events: Stream.Stream<WorkspaceSourceEvent, never>;
 
     #generation = 0;
+    #failures = 0;
     #liveGeneration: WorkspaceGeneration | null = null;
     #subscription: Bun.Socket | null = null;
+    #finishSubscription: ((cause: unknown) => void) | null = null;
     #requests = new Map<WorkspaceGeneration, Set<Bun.Socket>>();
     #requestCancellers = new Map<WorkspaceGeneration, Set<(reason: HerdRClientError) => void>>();
 
@@ -160,6 +163,8 @@ class LiveHerdRClient implements HerdRClientService {
         this.#stopped = true;
         this.#cancelSleep?.();
         this.#cancelSleep = null;
+        this.#finishSubscription?.(new Error("HerdR client closed"));
+        this.#finishSubscription = null;
         this.#subscription?.terminate();
         this.#subscription = null;
         for (const [generation, cancellers] of this.#requestCancellers) {
@@ -224,18 +229,15 @@ class LiveHerdRClient implements HerdRClientService {
     }
 
     async #run(): Promise<void> {
-        let failures = 0;
-
         while (!this.#stopped) {
             const generation = decodeGeneration(++this.#generation);
             try {
                 await this.#bootstrap(generation);
-                failures = 0;
             } catch (cause) {
                 if (this.#stopped) {
                     return;
                 }
-                failures += 1;
+                this.#failures += 1;
                 this.#logWarning("herdr_disconnected", cause);
             }
 
@@ -243,8 +245,11 @@ class LiveHerdRClient implements HerdRClientService {
                 return;
             }
 
-            const exponent = Math.max(0, Math.min(failures - 1, 6));
-            const cap = Math.min(retryMaximumDelayMs, retryInitialDelayMs * 2 ** exponent);
+            const exponent = Math.max(0, Math.min(this.#failures - 1, 6));
+            const cap = Math.min(
+                retryMaximumDelayMs,
+                retryInitialDelayMs * 2 ** exponent,
+            );
             const delay = Math.min(
                 retryMaximumDelayMs,
                 Math.floor(cap * (0.8 + Math.random() * 0.4)),
@@ -256,7 +261,19 @@ class LiveHerdRClient implements HerdRClientService {
 
     async #bootstrap(generation: WorkspaceGeneration): Promise<void> {
         const firstSnapshot = this.#newSnapshotRequest(generation);
-        const initial = await firstSnapshot.promise;
+        const timeout = setTimeout(
+            () =>
+                firstSnapshot.cancel(
+                    transportError("request", new Error("HerdR snapshot request timed out")),
+                ),
+            BOOTSTRAP_TIMEOUT_MS,
+        );
+        let initial: SessionSnapshot;
+        try {
+            initial = await firstSnapshot.promise;
+        } finally {
+            clearTimeout(timeout);
+        }
         const validated = await Effect.runPromise(validateHerdRProtocol(initial));
         // S1 establishes protocol compatibility only; core state is intentionally discarded.
         void validated;
@@ -271,12 +288,18 @@ class LiveHerdRClient implements HerdRClientService {
         let socket: Bun.Socket | null = null;
         let acked = false;
         let settled = false;
+        let clearAcknowledgementTimeout = (): void => {};
 
         const finish = (cause: unknown): void => {
             if (settled) {
                 return;
             }
             settled = true;
+            clearAcknowledgementTimeout();
+            if (this.#finishSubscription === finish) {
+                this.#finishSubscription = null;
+            }
+            socket?.terminate();
             if (this.#subscription === socket) {
                 this.#subscription = null;
             }
@@ -288,6 +311,18 @@ class LiveHerdRClient implements HerdRClientService {
                 finished.reject(failure);
             }
         };
+        this.#finishSubscription = finish;
+        const timeout = setTimeout(
+            () =>
+                finish(
+                    transportError(
+                        "subscribe",
+                        new Error("HerdR subscription acknowledgement timed out"),
+                    ),
+                ),
+            BOOTSTRAP_TIMEOUT_MS,
+        );
+        clearAcknowledgementTimeout = () => clearTimeout(timeout);
 
         const acceptFrame = (frame: string): void => {
             if (frame.length === 0) {
@@ -309,6 +344,8 @@ class LiveHerdRClient implements HerdRClientService {
                 }
                 if (!acked) {
                     acked = true;
+                    clearAcknowledgementTimeout();
+                    this.#failures = 0;
                     this.#liveGeneration = generation;
                     this.#publish(WorkspaceInvalidated.make({ generation }));
                     acknowledged.resolve();
@@ -384,11 +421,11 @@ class LiveHerdRClient implements HerdRClientService {
         }).then(
             (connected) => {
                 socket = connected;
-                this.#subscription = connected;
                 if (settled || this.#stopped) {
                     connected.terminate();
                     return;
                 }
+                this.#subscription = connected;
                 writeReadOnlyRequest(connected, makeEventsSubscribeRequest(id));
             },
             (cause: unknown) => finish(transportError("connect", cause)),

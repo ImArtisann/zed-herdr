@@ -30,10 +30,10 @@ export class NdjsonDecoder {
     constructor(maximumPartialFrameBytes = MAX_NDJSON_PARTIAL_FRAME_BYTES) {
         if (
             !Number.isSafeInteger(maximumPartialFrameBytes) ||
-            maximumPartialFrameBytes < 64 * 1024
+            maximumPartialFrameBytes < MAX_NDJSON_PARTIAL_FRAME_BYTES
         ) {
             throw new RangeError(
-                "maximumPartialFrameBytes must be a safe integer of at least 65536",
+                `maximumPartialFrameBytes must be a safe integer of at least ${MAX_NDJSON_PARTIAL_FRAME_BYTES}`,
             );
         }
 
