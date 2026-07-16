@@ -69,7 +69,9 @@ test("preserves whitespace and embedded newlines in the Git-emitted root", async
     await withTemporaryDirectory(async (directory) => {
         const emittedRoot = join(directory, " leading\ntrailing ");
         const project = await Effect.runPromise(
-            resolveWith(directory, { stdout: [emittedRoot.slice(0, 8), `${emittedRoot.slice(8)}\n`] }),
+            resolveWith(directory, {
+                stdout: [emittedRoot.slice(0, 8), `${emittedRoot.slice(8)}\n`],
+            }),
         );
 
         expect(project.gitRoot).toBe(emittedRoot);

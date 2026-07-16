@@ -114,9 +114,7 @@ const runCommand = (
             );
             const stdoutFiber = yield* process.stdout.pipe(
                 Stream.runDrain,
-                Effect.mapError(
-                    (error): CommandFailure => ({ _tag: "ProcessFailure", error }),
-                ),
+                Effect.mapError((error): CommandFailure => ({ _tag: "ProcessFailure", error })),
                 Effect.forkScoped,
             );
             const exitCode = yield* process.exitCode.pipe(

@@ -418,9 +418,7 @@ export const makeSyncDaemon = Effect.gen(function* () {
                 return {
                     ...state,
                     latestLiveGeneration: event.generation,
-                    ensuredGitRoots: generationChanged
-                        ? new Set<string>()
-                        : state.ensuredGitRoots,
+                    ensuredGitRoots: generationChanged ? new Set<string>() : state.ensuredGitRoots,
                     lastSuccessful: generationChanged ? null : state.lastSuccessful,
                 };
             });

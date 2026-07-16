@@ -68,7 +68,9 @@ const rawRequest = async (
                 return;
             }
             if (!buffer.endsWith("\n")) {
-                finish(() => rejectResponse(new Error("control socket ended without a response frame")));
+                finish(() =>
+                    rejectResponse(new Error("control socket ended without a response frame")),
+                );
                 return;
             }
             finish(() => resolveResponse(buffer.slice(0, -1)));
@@ -86,7 +88,9 @@ const rawRequest = async (
                     }
                     const written = socket.write(chunk, chunkOffset);
                     if (written < 0) {
-                        finish(() => rejectResponse(new Error("control socket closed while writing")));
+                        finish(() =>
+                            rejectResponse(new Error("control socket closed while writing")),
+                        );
                         return;
                     }
                     chunkOffset += written;
@@ -291,15 +295,13 @@ test("returns exact health and notify responses without trusting client pane fie
             };
         };
         expect(decodedHealth.ok).toBe(true);
-        expect(decodedHealth.daemon.identity).toBe("dev.zed-herdr:daemon");
+        expect(decodedHealth.daemon.identity).toBe("artisann.zed-herdr:daemon");
         expect(decodedHealth.daemon.paneId).toBe("daemon-pane");
         expect(decodedHealth.daemon.pid).toBe(process.pid);
         expect(decodedHealth.daemon.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 
         expect(
-            JSON.parse(
-                await rawRequest(path, [JSON.stringify({ type: "health" }), "\r\n"]),
-            ),
+            JSON.parse(await rawRequest(path, [JSON.stringify({ type: "health" }), "\r\n"])),
         ).toEqual(decodedHealth);
 
         const notification = Schema.decodeUnknownSync(HookNotification)({
@@ -314,7 +316,7 @@ test("returns exact health and notify responses without trusting client pane fie
 
         const daemon = await healthControl(path);
         expect(daemon).toMatchObject({
-            identity: "dev.zed-herdr:daemon",
+            identity: "artisann.zed-herdr:daemon",
             paneId: "daemon-pane",
             pid: process.pid,
         });

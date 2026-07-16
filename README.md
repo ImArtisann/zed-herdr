@@ -1,17 +1,19 @@
 # Zed Workspace Sync
 
-HerdR plugin `dev.zed-herdr` keeps the active HerdR workspace available in Zed without taking ownership of either application. It supports macOS and Linux, HerdR **0.7.3+** using protocol **16**, Bun, Git, and Zed with its `zed` CLI available.
+HerdR plugin `artisann.zed-herdr` keeps the active HerdR workspace available in Zed without taking ownership of either application. It supports macOS and Linux, HerdR **0.7.3+** using protocol **16**, Bun, Git, and Zed with its `zed` CLI available.
+
+For contributor architecture and subsystem internals, see [the documentation index](docs/README.md).
 
 ## Build and install
 
 Run plugin commands from a HerdR environment (`HERDR_ENV=1`), then build and link this checkout:
 
 ```bash
-cd <repo>
+cd zed-herdr
 bun install --frozen-lockfile
 bun run build
-herdr plugin link <repo>
-herdr plugin enable dev.zed-herdr
+herdr plugin link ImArtisann/zed-herdr
+herdr plugin enable artisann.zed-herdr
 ```
 
 Linking makes the local checkout available to HerdR; enabling activates its declared hooks. The plugin starts automatically for `workspace.created` and `workspace.focused` events. Its hook opens its own **unfocused** `Zed Workspace Sync` tab only when no live plugin daemon is available.
@@ -40,7 +42,7 @@ A successful response is JSON shaped like:
 {
     "ok": true,
     "daemon": {
-        "identity": "dev.zed-herdr:daemon",
+        "identity": "artisann.zed-herdr:daemon",
         "paneId": "<pane-id>",
         "pid": 1234,
         "startedAt": "2026-01-01T00:00:00.000Z"
@@ -53,8 +55,8 @@ A successful response is JSON shaped like:
 Use the plugin registry and plugin log to inspect the installation:
 
 ```bash
-herdr plugin list --plugin dev.zed-herdr --json
-herdr plugin log list --plugin dev.zed-herdr --limit 100
+herdr plugin list --plugin artisann.zed-herdr --json
+herdr plugin log list --plugin artisann.zed-herdr --limit 100
 ```
 
 Use the `paneId` from `health` (or the response from a manual plugin-pane open) to inspect the daemon terminal:
@@ -93,12 +95,12 @@ The daemon reads HerdR snapshots and lifecycle events, then asks Zed to add/focu
 For a linked checkout, stop future hook activation and remove the link:
 
 ```bash
-herdr plugin disable dev.zed-herdr
-herdr plugin unlink dev.zed-herdr
+herdr plugin disable artisann.zed-herdr
+herdr plugin unlink artisann.zed-herdr
 ```
 
 For a plugin installed from a remote source instead of linked from this checkout, use:
 
 ```bash
-herdr plugin uninstall dev.zed-herdr
+herdr plugin uninstall artisann.zed-herdr
 ```

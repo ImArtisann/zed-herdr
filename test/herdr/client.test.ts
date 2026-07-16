@@ -158,7 +158,6 @@ const flushMicrotasks = async (): Promise<void> => {
     }
 };
 
-
 const takeEvents = (client: HerdRClientService, count: number) =>
     Effect.runPromise(Stream.runCollect(client.events.pipe(Stream.take(count)))).then(
         Chunk.toReadonlyArray,
@@ -469,7 +468,10 @@ test("grows failed bootstrap backoff and resets the next acknowledged disconnect
             }
 
             const acknowledgedSnapshot = await server.requests.take();
-            writeJson(acknowledgedSnapshot.socket, snapshotResponse(acknowledgedSnapshot.request.id));
+            writeJson(
+                acknowledgedSnapshot.socket,
+                snapshotResponse(acknowledgedSnapshot.request.id),
+            );
             const acknowledgedSubscription = await server.requests.take();
             const lifecycle = takeEvents(client, 2);
             writeJson(
@@ -506,7 +508,9 @@ test("terminates a silent S1 after five seconds and reconnects after backoff", a
             expect(silentSnapshot.request.method).toBe("session.snapshot");
 
             vi.advanceTimersByTime(5_000);
-            expect(await takeClosedMethod(server, "session.snapshot")).toBe(silentSnapshot.socket.data);
+            expect(await takeClosedMethod(server, "session.snapshot")).toBe(
+                silentSnapshot.socket.data,
+            );
             await flushMicrotasks();
 
             vi.advanceTimersByTime(99);
@@ -583,7 +587,9 @@ test("terminates the active subscription socket after a protocol failure", async
             ]);
 
             writeJson(subscription.socket, snapshotResponse(subscription.request.id));
-            expect(await takeClosedMethod(server, "events.subscribe")).toBe(subscription.socket.data);
+            expect(await takeClosedMethod(server, "events.subscribe")).toBe(
+                subscription.socket.data,
+            );
         });
     } finally {
         await server.close();

@@ -23,15 +23,12 @@ import {
     prepareControlSocket,
     prepareControlSocketDirectory,
 } from "./control.ts";
-import {
-    HookNotification,
-    type HookNotification as HookNotificationValue,
-} from "./protocol.ts";
+import { HookNotification, type HookNotification as HookNotificationValue } from "./protocol.ts";
 
 const CONTROL_READINESS_MS = 1_500;
 const LOCK_STALE_MS = 5_000;
 const LOCK_POLL_MS = 25;
-const PLUGIN_ID = "dev.zed-herdr";
+const PLUGIN_ID = "artisann.zed-herdr";
 
 const NonEmptyText = Schema.String.pipe(Schema.nonEmptyString(), Schema.maxLength(4_096));
 const HookEvent = Schema.Struct({
@@ -574,11 +571,7 @@ export const runHook = async (options: HookStartupOptions = {}): Promise<HookSta
     const token = options.token ?? randomUUID;
     const path = control.controlSocketPath(environment);
     const deadline = now() + CONTROL_READINESS_MS;
-    await invokeWithinDeadline(
-        () => control.prepareControlSocketDirectory(path),
-        deadline,
-        now,
-    );
+    await invokeWithinDeadline(() => control.prepareControlSocketDirectory(path), deadline, now);
 
     try {
         const remaining = deadline - now();

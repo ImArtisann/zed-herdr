@@ -25,7 +25,7 @@ export type HealthControlRequest = Schema.Schema.Type<typeof HealthControlReques
 export const ControlRequest = Schema.Union(NotifyControlRequest, HealthControlRequest);
 export type ControlRequest = Schema.Schema.Type<typeof ControlRequest>;
 
-export const DaemonIdentity = Schema.Literal("dev.zed-herdr:daemon");
+export const DaemonIdentity = Schema.Literal("artisann.zed-herdr:daemon");
 export type DaemonIdentity = Schema.Schema.Type<typeof DaemonIdentity>;
 
 /** The daemon-owned fields reported to a local health client. */

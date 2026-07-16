@@ -5,7 +5,6 @@ import * as Logger from "effect/Logger";
 import * as Queue from "effect/Queue";
 import * as Runtime from "effect/Runtime";
 import * as Stream from "effect/Stream";
-
 import type { AppConfig } from "./config.ts";
 import type { WorkspaceCwdHint } from "./domain/workspace.ts";
 import { makeZedEditorAdapterLayer } from "./editor/zed.ts";

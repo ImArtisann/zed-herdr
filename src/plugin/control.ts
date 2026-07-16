@@ -1,5 +1,15 @@
 import { createHash } from "node:crypto";
-import { chmod, link, lstat, mkdir, open, readlink, rename, symlink, unlink } from "node:fs/promises";
+import {
+    chmod,
+    link,
+    lstat,
+    mkdir,
+    open,
+    readlink,
+    rename,
+    symlink,
+    unlink,
+} from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import * as Schema from "effect/Schema";
@@ -15,7 +25,7 @@ import {
 
 export const CONTROL_SOCKET_MAX_BYTES = 64 * 1024;
 export const CONTROL_SOCKET_MODE = 0o600;
-export const CONTROL_DAEMON_IDENTITY = "dev.zed-herdr:daemon" as const;
+export const CONTROL_DAEMON_IDENTITY = "artisann.zed-herdr:daemon" as const;
 
 export class AlreadyRunning extends Error {
     readonly _tag = "AlreadyRunning";
@@ -572,8 +582,7 @@ export const startControlServer = async (
 
                         if (
                             socket.data.bytes >
-                            CONTROL_SOCKET_MAX_BYTES +
-                                (socket.data.buffer.endsWith("\r") ? 1 : 0)
+                            CONTROL_SOCKET_MAX_BYTES + (socket.data.buffer.endsWith("\r") ? 1 : 0)
                         ) {
                             socket.data.completed = true;
                             writeAndClose(socket, { ok: false, error: "payload_too_large" });

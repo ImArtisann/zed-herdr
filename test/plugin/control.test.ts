@@ -236,7 +236,7 @@ test("hook recovers an orphan, opens one daemon, waits for readiness, and publis
                 "pane",
                 "open",
                 "--plugin",
-                "dev.zed-herdr",
+                "artisann.zed-herdr",
                 "--entrypoint",
                 "daemon",
                 "--placement",

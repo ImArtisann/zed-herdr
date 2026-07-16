@@ -557,7 +557,6 @@ test("deduplicates roots and retries a failed focus without caching the failure"
 
 test("keeps linked worktree roots independent", async () => {
     await withTemporaryDirectory(async (directory) => {
-
         const main = join(directory, "main");
         const linked = join(directory, "linked");
         await initializeRepository(main);
@@ -747,11 +746,7 @@ test("stale focus completion cannot record or log success", async () => {
         const focusCompleted = await Effect.runPromise(Deferred.make<void>());
         await withDaemon(
             (harness) => {
-                queueSnapshot(
-                    harness,
-                    1,
-                    snapshot("workspace", [workspace("workspace", repo)]),
-                );
+                queueSnapshot(harness, 1, snapshot("workspace", [workspace("workspace", repo)]));
                 return emitInvalidated(harness, 1).pipe(
                     Effect.zipRight(advanceDebounce),
                     Effect.zipRight(awaitSnapshot(harness)),

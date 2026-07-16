@@ -53,7 +53,7 @@ test("declares the official HerdR v0.7.3 plugin manifest", async () => {
     const manifest = await readFile(join(import.meta.dir, "../../herdr-plugin.toml"), "utf8");
 
     expect(Bun.TOML.parse(manifest)).toEqual({
-        id: "dev.zed-herdr",
+        id: "artisann.zed-herdr",
         name: "Zed Workspace Sync",
         version: "0.1.0",
         min_herdr_version: "0.7.3",
@@ -339,7 +339,7 @@ test("opens the exact unfocused daemon argv once while twenty hooks contend", as
                 "pane",
                 "open",
                 "--plugin",
-                "dev.zed-herdr",
+                "artisann.zed-herdr",
                 "--entrypoint",
                 "daemon",
                 "--placement",

@@ -58,9 +58,9 @@ Documented plugin workflow:
 ```bash
 bun run build
 herdr plugin link <repo>
-herdr plugin enable dev.zed-herdr
-herdr plugin disable dev.zed-herdr
-herdr plugin unlink dev.zed-herdr
+herdr plugin enable artisann.zed-herdr
+herdr plugin disable artisann.zed-herdr
+herdr plugin unlink artisann.zed-herdr
 ```
 
 Build before any command or E2E test that uses `dist/index.js`.

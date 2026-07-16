@@ -245,10 +245,7 @@ class LiveHerdRClient implements HerdRClientService {
             }
 
             const exponent = Math.max(0, Math.min(this.#failures - 1, 6));
-            const cap = Math.min(
-                retryMaximumDelayMs,
-                retryInitialDelayMs * 2 ** exponent,
-            );
+            const cap = Math.min(retryMaximumDelayMs, retryInitialDelayMs * 2 ** exponent);
             const delay = Math.min(
                 retryMaximumDelayMs,
                 Math.floor(cap * (0.8 + Math.random() * 0.4)),

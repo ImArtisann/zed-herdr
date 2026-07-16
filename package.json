@@ -3,6 +3,8 @@
     "module": "index.ts",
     "type": "module",
     "private": true,
+    "author": "ImArtisann",
+    "license": "MIT",
     "scripts": {
         "build": "bun build ./index.ts --target bun --outdir ./dist",
         "check": "bun run typecheck && bun run lint && bun run build && bun test",
