@@ -1,5 +1,7 @@
 # Zed Workspace Sync
 
+[![Plugin Demo](https://img.youtube.com/vi/Q_i-IKda7hE/maxresdefault.jpg)](https://youtu.be/Q_i-IKda7hE)
+
 HerdR plugin `artisann.zed-herdr` keeps the active HerdR workspace available in Zed without taking ownership of either application. It supports macOS and Linux, HerdR **0.7.3+** using protocol **16**, Bun, Git, and Zed with its `zed` CLI available.
 
 For contributor architecture and subsystem internals, see [the documentation index](docs/README.md).
