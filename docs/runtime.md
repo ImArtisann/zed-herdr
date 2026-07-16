@@ -14,16 +14,17 @@ and the separate local control server. Synchronization policy remains in the
 [`runCli`](../src/cli.ts) accepts exactly one argument and exposes this exact usage literal:
 
 ```text
-Usage: zed-herdr <daemon|hook|health>
+Usage: zed-herdr <daemon|hook|health|toggle>
 ```
 
 The one argument dispatches as follows:
 
-| Command | Runtime path |
-|---|---|
-| `daemon` | `decodeAppConfig` → `runDaemon` |
-| `hook` | Promise-based `runHook` wrapped at the CLI boundary |
-| `health` | Promise-based `healthControl` plus daemon-identity validation |
+| Command  | Runtime path                                                                 |
+| -------- | ---------------------------------------------------------------------------- |
+| `daemon` | `decodeAppConfig` → `runDaemon`                                              |
+| `hook`   | Promise-based `runHook` wrapped at the CLI boundary                          |
+| `health` | Promise-based `healthControl` plus daemon-identity validation                |
+| `toggle` | Promise-based `toggleControl`, printing the daemon's resulting enabled state |
 
 Missing, extra, or unknown arguments print the usage and set exit status `2`.
 
@@ -35,13 +36,13 @@ resolve `zed` through `PATH`.
 
 `makeAppLayer` composes the daemon dependencies:
 
-| Layer | Supplied responsibility |
-|---|---|
-| `BunContext.layer` | Bun command, filesystem, and path platform services |
-| `HerdRWorkspaceSourceLive` | The protocol-16 `WorkspaceSource` implementation |
+| Layer                       | Supplied responsibility                                     |
+| --------------------------- | ----------------------------------------------------------- |
+| `BunContext.layer`          | Bun command, filesystem, and path platform services         |
+| `HerdRWorkspaceSourceLive`  | The protocol-16 `WorkspaceSource` implementation            |
 | `makeZedEditorAdapterLayer` | The `EditorAdapter` implementation, configured by `ZED_BIN` |
-| `WorkspaceHintSource` | The stream supplied by the control notification queue |
-| `Logger.json` | Stable JSON logging for source and synchronization events |
+| `WorkspaceHintSource`       | The stream supplied by the control notification queue       |
+| `Logger.json`               | Stable JSON logging for source and synchronization events   |
 
 The layer graph supplies implementations to `makeSyncDaemon`; it does not move plugin socket or
 lock coordination into the Effect service graph.
@@ -52,9 +53,10 @@ lock coordination into the Effect service graph.
 2. `daemon` decodes configuration and enters `runDaemon`.
 3. `runDaemon` allocates a bounded `HookNotification` queue with capacity `256` and adds a queue
    shutdown finalizer.
-4. It trims `HERDR_PANE_ID`, using `null` when absent or empty, and starts the owner-only control
-   server at the derived control path.
-5. `Effect.acquireRelease` scopes that server and closes it during release.
+4. It trims `HERDR_PANE_ID`, using `null` when absent or empty, creates the synchronization daemon,
+   and starts the owner-only control server at the derived control path.
+5. The control server bridges `toggle` requests to the synchronization daemon through the current
+   Effect runtime. `Effect.acquireRelease` scopes that server and closes it during release.
 6. `Stream.fromQueue` projects accepted notifications into the `WorkspaceHintSource` layer.
 7. The scoped synchronization daemon runs with the assembled application layer. Scope exit closes
    the control server, shuts down the queue, and releases the source and adapter resources.
@@ -64,9 +66,9 @@ Its socket safety and request protocol are documented with the [plugin boundary]
 
 ## Failure boundaries
 
-`hook` and `health` failures alone pass through `commandFailed`: it renders an error message, keeps
-at most the last 4,096 characters, prints it, and sets exit status `1`. `health` also uses that path
-if the response carries the wrong daemon identity.
+`hook`, `health`, and `toggle` failures pass through `commandFailed`: it renders an error message,
+keeps at most the last 4,096 characters, prints it, and sets exit status `1`. `health` also uses
+that path if the response carries the wrong daemon identity.
 
 Daemon configuration and runtime failures do **not** pass through `commandFailed`. They remain
 Effect failures and propagate through `BunRuntime.runMain`. This distinction prevents the docs from

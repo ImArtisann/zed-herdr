@@ -91,6 +91,7 @@ export interface StartControlServerOptions {
     /** Captured by the daemon at startup; clients never submit or influence this value. */
     readonly paneId: string | null;
     readonly notifications: ControlNotificationSink;
+    readonly toggleEnabled?: () => boolean | Promise<boolean>;
 }
 
 export interface ControlServer {
@@ -422,6 +423,9 @@ const isExactControlResponse = (value: unknown): value is Record<string, unknown
         if (hasExactKeys(value, ["ok"])) {
             return true;
         }
+        if (hasExactKeys(value, ["ok", "enabled"])) {
+            return typeof value.enabled === "boolean";
+        }
         const daemon = value.daemon;
         return (
             hasExactKeys(value, ["ok", "daemon"]) &&
@@ -444,6 +448,7 @@ type ConnectionState = {
 const responseFor = (
     encoded: string,
     notificationSink: ControlNotificationSink,
+    toggleEnabled: StartControlServerOptions["toggleEnabled"],
     daemon: DaemonHealth,
     socket: Bun.Socket<ConnectionState>,
 ): void => {
@@ -463,6 +468,25 @@ const responseFor = (
 
     if (decoded.right.type === "health") {
         writeAndClose(socket, { ok: true, daemon });
+        return;
+    }
+
+    if (decoded.right.type === "toggle") {
+        if (toggleEnabled === undefined) {
+            writeAndClose(socket, { ok: false, error: "server_failure" });
+            return;
+        }
+        let toggled: boolean | Promise<boolean>;
+        try {
+            toggled = toggleEnabled();
+        } catch {
+            writeAndClose(socket, { ok: false, error: "server_failure" });
+            return;
+        }
+        void Promise.resolve(toggled).then(
+            (enabled) => writeAndClose(socket, { ok: true, enabled }),
+            () => writeAndClose(socket, { ok: false, error: "server_failure" }),
+        );
         return;
     }
 
@@ -515,7 +539,7 @@ export const startControlServer = async (
                 return;
             }
             socket.data.completed = true;
-            responseFor(frame, options.notifications, daemon, socket);
+            responseFor(frame, options.notifications, options.toggleEnabled, daemon, socket);
         };
         const priorUmask = process.umask(0o177);
         try {
@@ -946,4 +970,12 @@ export const healthControl = async (path: string, timeoutMs = 500): Promise<Daem
         throw new ControlProtocolError(path, "health was not acknowledged");
     }
     return response.daemon;
+};
+
+export const toggleControl = async (path: string, timeoutMs = 500): Promise<boolean> => {
+    const response = await requestControl(path, { type: "toggle" }, timeoutMs);
+    if (response.ok !== true || !("enabled" in response)) {
+        throw new ControlProtocolError(path, "toggle was not acknowledged");
+    }
+    return response.enabled;
 };

@@ -114,6 +114,28 @@ const gateGeneration = (
         ),
     );
 
+const synchronizationDisabled = { _tag: "SynchronizationDisabled" } as const;
+
+interface SyncControlState {
+    readonly enabled: boolean;
+    readonly disabled: Deferred.Deferred<void>;
+}
+
+const gateSynchronization = (
+    cache: Ref.Ref<SyncCache>,
+    control: Ref.Ref<SyncControlState>,
+    disabled: Deferred.Deferred<void>,
+    generation: WorkspaceGeneration,
+) =>
+    gateGeneration(cache, generation).pipe(
+        Effect.zipRight(Ref.get(control)),
+        Effect.flatMap((state) =>
+            state.enabled && state.disabled === disabled
+                ? Effect.void
+                : Effect.fail(synchronizationDisabled),
+        ),
+    );
+
 const installSnapshot = (
     cache: Ref.Ref<SyncCache>,
     generation: WorkspaceGeneration,
@@ -192,7 +214,9 @@ const findWorkspace = (
 
 export interface SyncDaemon {
     readonly cache: Ref.Ref<SyncCache>;
+    readonly enabled: Effect.Effect<boolean>;
     readonly run: Effect.Effect<never, unknown, Scope.Scope | FileSystem | Path | CommandExecutor>;
+    readonly toggleEnabled: Effect.Effect<boolean>;
 }
 
 export const makeSyncDaemon = Effect.gen(function* () {
@@ -202,32 +226,39 @@ export const makeSyncDaemon = Effect.gen(function* () {
     const cache = yield* Ref.make(makeEmptySyncCache());
     const triggers = yield* Queue.unbounded<RefreshTrigger>();
     const cancellations = new Map<WorkspaceGeneration, Deferred.Deferred<void>>();
+    const initialDisabled = yield* Deferred.make<void>();
+    const control = yield* Ref.make<SyncControlState>({
+        enabled: true,
+        disabled: initialDisabled,
+    });
+    const controlCommands = yield* Effect.makeSemaphore(1);
 
-    const refresh = (trigger: RefreshTrigger) =>
+    const refresh = (trigger: RefreshTrigger, disabled: Deferred.Deferred<void>) =>
         Effect.gen(function* () {
-            yield* gateGeneration(cache, trigger.generation);
+            yield* gateSynchronization(cache, control, disabled, trigger.generation);
             yield* logSync("info", "workspace_sync_started", {
                 operation: "snapshot",
                 elapsedMs: elapsedMillis(trigger.ingressAt, yield* Clock.currentTimeNanos),
             });
 
             const snapshot = yield* source.snapshot(trigger.generation);
-            yield* gateGeneration(cache, trigger.generation);
+            yield* gateSynchronization(cache, control, disabled, trigger.generation);
             const previous = yield* Ref.get(cache);
             const projects = yield* resolveSnapshotProjects(
                 snapshot,
                 previous.cwdHints,
                 trigger.ingressAt,
             );
-            yield* gateGeneration(cache, trigger.generation);
+            yield* gateSynchronization(cache, control, disabled, trigger.generation);
             const installed = yield* installSnapshot(cache, trigger.generation, snapshot, projects);
             for (const project of uniqueProjects(snapshot, projects)) {
                 if (installed.ensuredGitRoots.has(project.gitRoot)) {
                     continue;
                 }
 
-                yield* gateGeneration(cache, trigger.generation);
+                yield* gateSynchronization(cache, control, disabled, trigger.generation);
                 const result = yield* Effect.either(adapter.ensureProject(project.gitRoot));
+                yield* gateSynchronization(cache, control, disabled, trigger.generation);
                 const now = yield* Clock.currentTimeNanos;
                 if (result._tag === "Left") {
                     yield* logSync("error", "workspace_sync_failed", {
@@ -284,8 +315,9 @@ export const makeSyncDaemon = Effect.gen(function* () {
                 return;
             }
 
-            yield* gateGeneration(cache, trigger.generation);
+            yield* gateSynchronization(cache, control, disabled, trigger.generation);
             const result = yield* Effect.either(adapter.focusProject(project.gitRoot));
+            yield* gateSynchronization(cache, control, disabled, trigger.generation);
             const now = yield* Clock.currentTimeNanos;
             if (result._tag === "Left") {
                 yield* logSync("error", "workspace_sync_failed", {
@@ -322,6 +354,7 @@ export const makeSyncDaemon = Effect.gen(function* () {
             }
         }).pipe(
             Effect.catchTag("StaleWorkspaceGeneration", () => Effect.void),
+            Effect.catchTag("SynchronizationDisabled", () => Effect.void),
             Effect.catchAllCause((cause) =>
                 Clock.currentTimeNanos.pipe(
                     Effect.flatMap((now) =>
@@ -350,6 +383,10 @@ export const makeSyncDaemon = Effect.gen(function* () {
             if (matching.length === 0) {
                 return;
             }
+            const controlState = yield* Ref.get(control);
+            if (!controlState.enabled) {
+                return;
+            }
             const trigger = matching.reduce((earliest, candidate) =>
                 candidate.ingressAt < earliest.ingressAt ? candidate : earliest,
             );
@@ -358,8 +395,15 @@ export const makeSyncDaemon = Effect.gen(function* () {
                     Effect.fail(new StaleWorkspaceGeneration({ generation: trigger.generation })),
                 ),
             );
-            yield* Effect.raceFirst(refresh(trigger), cancelled).pipe(
+            const disabled = Deferred.await(controlState.disabled).pipe(
+                Effect.flatMap(() => Effect.fail(synchronizationDisabled)),
+            );
+            yield* Effect.raceFirst(
+                Effect.raceFirst(refresh(trigger, controlState.disabled), cancelled),
+                disabled,
+            ).pipe(
                 Effect.catchTag("StaleWorkspaceGeneration", () => Effect.void),
+                Effect.catchTag("SynchronizationDisabled", () => Effect.void),
             );
         }),
     );
@@ -422,6 +466,9 @@ export const makeSyncDaemon = Effect.gen(function* () {
                     lastSuccessful: generationChanged ? null : state.lastSuccessful,
                 };
             });
+            if (!(yield* Ref.get(control)).enabled) {
+                return;
+            }
             yield* Queue.offer(triggers, {
                 generation: event.generation,
                 ingressAt: yield* Clock.currentTimeNanos,
@@ -445,12 +492,61 @@ export const makeSyncDaemon = Effect.gen(function* () {
             if (cancelled === undefined) {
                 return;
             }
+            if (!(yield* Ref.get(control)).enabled) {
+                return;
+            }
             yield* Queue.offer(triggers, {
                 generation,
                 ingressAt: yield* Clock.currentTimeNanos,
                 cancelled,
             });
         });
+
+    const toggleEnabled = Effect.gen(function* () {
+        const nextDisabled = yield* Deferred.make<void>();
+        const transition = yield* Ref.modify(control, (state) =>
+            state.enabled
+                ? [
+                      { enabled: false, disabled: state.disabled },
+                      { ...state, enabled: false },
+                  ]
+                : [
+                      { enabled: true, disabled: state.disabled },
+                      { enabled: true, disabled: nextDisabled },
+                  ],
+        );
+
+        if (!transition.enabled) {
+            yield* Deferred.succeed(transition.disabled, undefined);
+            yield* Queue.takeAll(triggers);
+            return false;
+        }
+
+        const state = yield* Ref.modify(cache, (current) => {
+            const next = {
+                ...current,
+                ensuredGitRoots: new Set<string>(),
+                lastSuccessful: null,
+            };
+            return [next, next] as const;
+        });
+        const generation = state.latestLiveGeneration;
+        if (generation === null) {
+            return true;
+        }
+        const cancelled = cancellations.get(generation);
+        if (cancelled === undefined) {
+            return true;
+        }
+        yield* Queue.offer(triggers, {
+            generation,
+            ingressAt: yield* Clock.currentTimeNanos,
+            cancelled,
+        });
+        return true;
+    }).pipe(controlCommands.withPermits(1));
+
+    const enabled = Ref.get(control).pipe(Effect.map((state) => state.enabled));
 
     const ingress = Stream.merge(
         source.events.pipe(Stream.map((event): Ingress => ({ _tag: "SourceEvent", event }))),
@@ -467,5 +563,5 @@ export const makeSyncDaemon = Effect.gen(function* () {
         return yield* Effect.raceFirst(Fiber.join(collectorFiber), Fiber.join(workerFiber));
     });
 
-    return { cache, run } satisfies SyncDaemon;
+    return { cache, enabled, run, toggleEnabled } satisfies SyncDaemon;
 });

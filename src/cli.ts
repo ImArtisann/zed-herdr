@@ -2,10 +2,15 @@ import * as Effect from "effect/Effect";
 
 import { runDaemon } from "./app.ts";
 import { decodeAppConfig } from "./config.ts";
-import { CONTROL_DAEMON_IDENTITY, controlSocketPath, healthControl } from "./plugin/control.ts";
+import {
+    CONTROL_DAEMON_IDENTITY,
+    controlSocketPath,
+    healthControl,
+    toggleControl,
+} from "./plugin/control.ts";
 import { runHook } from "./plugin/hook.ts";
 
-export const USAGE = "Usage: zed-herdr <daemon|hook|health>";
+export const USAGE = "Usage: zed-herdr <daemon|hook|health|toggle>";
 
 const invalidCommand = Effect.sync(() => {
     console.error(USAGE);
@@ -46,6 +51,20 @@ const runPluginHook = (environment: NodeJS.ProcessEnv) =>
         }),
     );
 
+const runToggle = (environment: NodeJS.ProcessEnv) =>
+    Effect.tryPromise({
+        try: () => toggleControl(controlSocketPath(environment)),
+        catch: (cause) => cause,
+    }).pipe(
+        Effect.matchEffect({
+            onFailure: commandFailed,
+            onSuccess: (enabled) =>
+                Effect.sync(() => {
+                    console.log(JSON.stringify({ ok: true, enabled }));
+                }),
+        }),
+    );
+
 export const runCli = (
     arguments_: ReadonlyArray<string> = process.argv.slice(2),
     environment: NodeJS.ProcessEnv = process.env,
@@ -62,6 +81,8 @@ export const runCli = (
             return runHealth(environment);
         case "hook":
             return runPluginHook(environment);
+        case "toggle":
+            return runToggle(environment);
         default:
             return invalidCommand;
     }

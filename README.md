@@ -86,6 +86,39 @@ For HerdR transport, `HERDR_SOCKET_PATH` takes precedence. Otherwise the socket 
 
 The daemon reads HerdR snapshots and lifecycle events, then asks Zed to add/focus a validated Git root. It never sends a mutating HerdR request, kills a process, reuses an existing pane, replaces Zed window/project state, accesses Zed's private storage, or uses Zed's state-replacing CLI options. Non-worktree workspaces wait for the plugin hook's workspace cwd hint; ambiguous, inaccessible, or non-Git paths are skipped.
 
+## Pause and resume Zed control
+
+HerdR plugin manifests declare actions but do not install user keybindings. Add this command binding
+to `~/.config/herdr/config.toml`:
+
+```toml
+[[keys.command]]
+key = "prefix+shift+z"
+type = "plugin_action"
+command = "artisann.zed-herdr.toggle"
+description = "Toggle Zed workspace sync"
+```
+
+Apply it to the running HerdR server:
+
+```bash
+herdr server reload-config
+```
+
+Then press the HerdR prefix followed by `Shift+Z`. Disabling interrupts in-flight synchronization
+and suppresses new Zed calls while HerdR remains authoritative. Re-enabling requests a fresh
+snapshot for the current generation.
+
+The same action is available from the built CLI:
+
+```bash
+bun dist/index.js toggle
+```
+
+It prints `{"ok":true,"enabled":false}` or `{"ok":true,"enabled":true}`. A newly started daemon
+begins enabled. This runtime pause is separate from `herdr plugin disable`, which disables the
+action target but leaves the user-configured keybinding in place.
+
 ## Troubleshooting
 
 - **Protocol mismatch:** use HerdR 0.7.3 or later with protocol 16. A different protocol is rejected rather than guessed; update the compatible HerdR/plugin pair, rebuild, and relink if needed.

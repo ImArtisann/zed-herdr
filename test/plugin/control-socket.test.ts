@@ -31,6 +31,7 @@ import {
     prepareControlSocketDirectory,
     probeControlSocket,
     startControlServer,
+    toggleControl,
 } from "../../src/plugin/control.ts";
 
 const makeTemporaryDirectory = (): Promise<string> => mkdtemp(`${tmpdir()}/zed-herdr-control-`);
@@ -142,6 +143,7 @@ const withControlServer = async (
     const directory = await makeTemporaryDirectory();
     const path = `${directory}/control.sock`;
     const notifications: Array<HookNotification> = [];
+    let enabled = true;
     const server = await startControlServer({
         path,
         paneId: "daemon-pane",
@@ -149,6 +151,10 @@ const withControlServer = async (
             async publish(notification) {
                 notifications.push(notification);
             },
+        },
+        toggleEnabled() {
+            enabled = !enabled;
+            return enabled;
         },
     });
 
@@ -313,6 +319,10 @@ test("returns exact health and notify responses without trusting client pane fie
         ).toBe('{"ok":true}');
         await notifyControl(path, notification);
         expect(notifications).toEqual([notification, notification]);
+        expect(await toggleControl(path)).toBe(false);
+        expect(await rawRequest(path, [JSON.stringify({ type: "toggle" }), "\n"])).toBe(
+            '{"ok":true,"enabled":true}',
+        );
 
         const daemon = await healthControl(path);
         expect(daemon).toMatchObject({

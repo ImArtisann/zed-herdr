@@ -20,6 +20,20 @@ from the Effect synchronization service graph.
 
 Both execute `bun ./dist/index.js hook`. The manifest's `daemon` pane executes
 `bun ./dist/index.js daemon`, is titled `Zed Workspace Sync`, and uses placement `tab`.
+The manifest also declares the workspace-scoped `toggle` action, which executes
+`bun ./dist/index.js toggle` and pauses or resumes the live daemon without disabling the plugin.
+HerdR keybindings are user configuration, not plugin-manifest fields. Install the binding in
+`~/.config/herdr/config.toml`:
+
+```toml
+[[keys.command]]
+key = "prefix+shift+z"
+type = "plugin_action"
+command = "artisann.zed-herdr.toggle"
+description = "Toggle Zed workspace sync"
+```
+
+Run `herdr server reload-config` after editing the file.
 
 ### Hook decoding
 
@@ -80,6 +94,10 @@ Exact requests:
 { "type": "health" }
 ```
 
+```json
+{ "type": "toggle" }
+```
+
 Exact success shapes:
 
 ```json
@@ -98,8 +116,12 @@ Exact success shapes:
 }
 ```
 
+```json
+{ "ok": true, "enabled": false }
+```
+
 `paneId` is `null | string`; `pid` is a nonnegative integer and `startedAt` is a bounded ISO
-timestamp. The exact failure shape is:
+timestamp. A toggle response reports the daemon's resulting state. The exact failure shape is:
 
 ```json
 {
@@ -110,7 +132,8 @@ timestamp. The exact failure shape is:
 
 A validated `notify` request publishes its `HookNotification` into `runDaemon`'s bounded queue.
 `Stream.fromQueue` supplies that queue as `WorkspaceHintSource`; no control wire type reaches the
-synchronization core.
+synchronization core. A validated `toggle` request invokes the daemon's Effect control contract
+through the captured runtime.
 
 ## Flow
 
@@ -148,8 +171,8 @@ The exported errors define the retry/fail-closed boundary precisely:
 - `ControlUnavailable.operation` is `"connect" | "read" | "timeout"`. It is the only condition
   the hook retries or uses to enter daemon startup.
 - `UnsafeControlSocket.reason` is `"foreign_owner" | "not_socket" | "symlink" |
-  "changed_inode" | "lstat_failed" | "probe_failed" | "not_directory" | "unsafe_mode" |
-  "unsafe_parent"`. Every variant fails closed.
+"changed_inode" | "lstat_failed" | "probe_failed" | "not_directory" | "unsafe_mode" |
+"unsafe_parent"`. Every variant fails closed.
 - `ControlProtocolError` fails closed; malformed, oversized, trailing, or unexpected daemon
   responses never trigger pane startup.
 - `AlreadyRunning` is handled only around pane preparation as described above.

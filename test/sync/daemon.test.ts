@@ -1076,3 +1076,52 @@ test("Invalidated(2) supersedes a blocked generation 1 without Disconnected(1)",
         });
     });
 });
+
+test("disabling interrupts live synchronization and re-enabling refreshes the current generation", async () => {
+    await withTemporaryDirectory(async (directory) => {
+        const repo = join(directory, "repo");
+        await initializeRepository(repo);
+        const blockedSnapshot = await Effect.runPromise(Deferred.make<WorkspaceSnapshot>());
+
+        await withDaemon((harness) => {
+            harness.snapshots.set(1, [
+                Deferred.await(blockedSnapshot),
+                Effect.succeed(snapshot("workspace", [workspace("workspace", repo)])),
+            ]);
+
+            return emitInvalidated(harness, 1).pipe(
+                Effect.zipRight(advanceDebounce),
+                Effect.zipRight(awaitSnapshot(harness)),
+                Effect.zipRight(harness.daemon.toggleEnabled),
+                Effect.tap((enabled) =>
+                    Effect.sync(() => {
+                        expect(enabled).toBe(false);
+                    }),
+                ),
+                Effect.zipRight(settle),
+                Effect.zipRight(harness.daemon.enabled),
+                Effect.tap((enabled) =>
+                    Effect.sync(() => {
+                        expect(enabled).toBe(false);
+                        expect(harness.calls).toEqual([]);
+                    }),
+                ),
+                Effect.zipRight(harness.daemon.toggleEnabled),
+                Effect.tap((enabled) =>
+                    Effect.sync(() => {
+                        expect(enabled).toBe(true);
+                    }),
+                ),
+                Effect.zipRight(advanceDebounce),
+                Effect.zipRight(awaitSnapshot(harness)),
+                Effect.zipRight(awaitCalls(harness, 2)),
+                Effect.zipRight(
+                    Effect.sync(() => {
+                        expect(harness.snapshotCalls).toEqual([1, 1]);
+                        expect(harness.calls).toEqual([`ensure:${repo}`, `focus:${repo}`]);
+                    }),
+                ),
+            );
+        });
+    });
+});

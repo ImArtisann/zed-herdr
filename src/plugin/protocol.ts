@@ -22,7 +22,16 @@ export const HealthControlRequest = Schema.Struct({
 });
 export type HealthControlRequest = Schema.Schema.Type<typeof HealthControlRequest>;
 
-export const ControlRequest = Schema.Union(NotifyControlRequest, HealthControlRequest);
+export const ToggleControlRequest = Schema.Struct({
+    type: Schema.Literal("toggle"),
+});
+export type ToggleControlRequest = Schema.Schema.Type<typeof ToggleControlRequest>;
+
+export const ControlRequest = Schema.Union(
+    NotifyControlRequest,
+    HealthControlRequest,
+    ToggleControlRequest,
+);
 export type ControlRequest = Schema.Schema.Type<typeof ControlRequest>;
 
 export const DaemonIdentity = Schema.Literal("artisann.zed-herdr:daemon");
@@ -49,6 +58,12 @@ export const HealthControlResponse = Schema.Struct({
 });
 export type HealthControlResponse = Schema.Schema.Type<typeof HealthControlResponse>;
 
+export const ToggleControlResponse = Schema.Struct({
+    ok: Schema.Literal(true),
+    enabled: Schema.Boolean,
+});
+export type ToggleControlResponse = Schema.Schema.Type<typeof ToggleControlResponse>;
+
 /** Exact failure wire response: client input failures or server publish failure. */
 export const ControlFailureResponse = Schema.Struct({
     ok: Schema.Literal(false),
@@ -58,6 +73,7 @@ export type ControlFailureResponse = Schema.Schema.Type<typeof ControlFailureRes
 
 export const ControlResponse = Schema.Union(
     HealthControlResponse,
+    ToggleControlResponse,
     NotifyControlResponse,
     ControlFailureResponse,
 );

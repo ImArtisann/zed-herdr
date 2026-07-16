@@ -10,6 +10,13 @@ command = ["bun", "install", "--frozen-lockfile"]
 [[build]]
 command = ["bun", "run", "build"]
 
+[[actions]]
+id = "toggle"
+title = "Toggle Zed Workspace Sync"
+contexts = ["workspace"]
+command = ["bun", "./dist/index.js", "toggle"]
+
+
 [[events]]
 on = "workspace.created"
 command = ["bun", "./dist/index.js", "hook"]

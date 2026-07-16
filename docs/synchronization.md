@@ -14,6 +14,7 @@ The daemon owns:
 
 - merged source-event and cwd-hint ingress;
 - current-generation selection and cancellation;
+- runtime enable/disable state and interruption;
 - a 50 ms burst collapse;
 - authoritative S2 snapshot retrieval;
 - resolution of every workspace to a canonical Git root;
@@ -28,15 +29,15 @@ process policy remains in the [Zed adapter](editor.md).
 
 `SyncCache` contains:
 
-| Field | Meaning |
-|---|---|
+| Field                  | Meaning                                                               |
+| ---------------------- | --------------------------------------------------------------------- |
 | `latestLiveGeneration` | The only generation currently allowed to install or invoke the editor |
-| `snapshot` | The most recently installed authoritative snapshot |
-| `cwdHints` | Latest plugin cwd by workspace id |
-| `projects` | Successfully resolved project by workspace id |
-| `ensuredGitRoots` | Roots successfully ensured during the current source generation |
-| `lastSuccessful` | Last successfully focused `{ workspaceId, gitRoot }` |
-| `lastSynchronizedAt` | Millisecond timestamp of the last recorded ensure or focus success |
+| `snapshot`             | The most recently installed authoritative snapshot                    |
+| `cwdHints`             | Latest plugin cwd by workspace id                                     |
+| `projects`             | Successfully resolved project by workspace id                         |
+| `ensuredGitRoots`      | Roots successfully ensured during the current source generation       |
+| `lastSuccessful`       | Last successfully focused `{ workspaceId, gitRoot }`                  |
+| `lastSynchronizedAt`   | Millisecond timestamp of the last recorded ensure or focus success    |
 
 `Invalidated` and `Disconnected` events form one ingress path. `WorkspaceCwdHint` values form the
 other. A hint always updates `cwdHints`; it queues a refresh only when a generation is live and has
@@ -47,11 +48,17 @@ An `Invalidated` event older than the live generation is ignored. A newer genera
 older generation work. Changing generations resets the daemon's `ensuredGitRoots` and
 `lastSuccessful`; these fields are generation-local.
 
+Disabling resolves the current control-cycle signal, drains queued refreshes, and prevents source
+events or hints from queuing new work. Source generations and cwd hints continue to update.
+Re-enabling creates a new control cycle, clears synchronization-local success state, and queues one
+fresh refresh for the current live generation.
+
 ## Flow
 
 1. The worker takes the first refresh trigger, sleeps for 50 ms, drains the queued burst, filters
    it to the current live generation, and keeps the earliest ingress timestamp.
-2. It races the refresh against that generation's cancellation signal.
+2. It races the refresh against both the generation cancellation signal and the active
+   enable/disable control-cycle signal.
 3. After a generation gate, it logs `workspace_sync_started` and requests the generation-gated S2
    snapshot from `WorkspaceSource`.
 4. It gates again, reads the current cwd hints, and resolves every workspace in snapshot order.
@@ -96,10 +103,11 @@ the adapter safely suppresses a redundant process call it already completed.
 
 ## Failure boundaries
 
-Generation gates run before snapshot work, authoritative cache installation, every editor call,
-and each success-state write. Disconnect resolves the generation's cancellation signal, clears it
-as live when applicable, and removes queued triggers for that generation. Stale-generation
-failures are absorbed without a misleading failure or success log.
+Generation and control-cycle gates run before snapshot work, authoritative cache installation,
+every editor call, and each success-state write. Disconnect resolves the generation's cancellation
+signal, clears it as live when applicable, and removes queued triggers for that generation.
+Disabling resolves the control-cycle signal and drains the queue. Expected stale-generation and
+disabled-cycle failures are absorbed without a misleading failure or success log.
 
 The stable synchronization event literals are:
 

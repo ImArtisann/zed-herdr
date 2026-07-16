@@ -8,13 +8,13 @@ Supported hosts are macOS and Linux with Bun, Git, HerdR `>=0.7.3`, and the Zed 
 
 ## Architecture & Data Flow
 
-1. `index.ts` runs `runCli()` through `BunRuntime.runMain`; `src/cli.ts` accepts exactly one command: `daemon`, `hook`, or `health`.
+1. `index.ts` runs `runCli()` through `BunRuntime.runMain`; `src/cli.ts` accepts exactly one command: `daemon`, `hook`, `health`, or `toggle`.
 2. `src/app.ts` composes Bun platform services, the HerdR workspace source, Zed adapter, JSON logger, plugin control server, and synchronization daemon through Effect `Layer`s.
 3. `src/herdr/client.ts` bootstraps each generation with `session.snapshot`, opens `events.subscribe`, waits for `subscription_started`, and only then publishes an `Invalidated` event. A fresh snapshot is requested for synchronization. Disconnects cancel the generation and publish `Disconnected`.
-4. `src/sync/daemon.ts` merges source events and hook cwd hints into queues. A single worker collapses bursts for 50 ms, gates every async stage against the live generation, resolves all projects, atomically replaces cache state, ensures each unique Git root, and focuses the authoritative workspace.
+4. `src/sync/daemon.ts` merges source events and hook cwd hints into queues. A single worker collapses bursts for 50 ms, gates every async stage against the live generation and runtime enable cycle, resolves all projects, atomically replaces cache state, ensures each unique Git root, and focuses the authoritative workspace.
 5. `src/sync/resolve-project.ts` prefers HerdR `checkoutPath`, falls back to the matching hook cwd hint, verifies a directory, and runs `git -C <path> rev-parse --show-toplevel`. Invalid, inaccessible, ambiguous, or non-Git paths are logged and never reach the editor adapter.
 6. `src/editor/zed.ts` serializes shell-free Zed calls. `ensureProject` caches only successful roots; `focusProject` always runs `zed -e`.
-7. Plugin hooks send cwd hints to the owner-only control socket. When no live daemon exists, `src/plugin/hook.ts` coordinates contenders with a token lock and opens one unfocused HerdR daemon tab. `health` reads daemon identity; it never starts a daemon.
+7. Plugin hooks send cwd hints to the owner-only control socket. When no live daemon exists, `src/plugin/hook.ts` coordinates contenders with a token lock and opens one unfocused HerdR daemon tab. `health` reads daemon identity; `toggle` pauses or resumes the live synchronization daemon; neither starts one.
 
 Preserve these boundaries: transport types do not enter core domain types, stale generations cannot mutate cache or call Zed, and plugin control/hook code remains separate from the Effect-based synchronization core.
 

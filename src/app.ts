@@ -45,32 +45,35 @@ export const runDaemon = (config: AppConfig, environment: NodeJS.ProcessEnv = pr
                 CONTROL_NOTIFICATION_QUEUE_CAPACITY,
             );
             yield* Effect.addFinalizer(() => Queue.shutdown(notifications));
-            const runtime = yield* Effect.runtime<never>();
-            const paneId = environment.HERDR_PANE_ID?.trim() || null;
-            yield* Effect.acquireRelease(
-                Effect.tryPromise({
-                    try: () =>
-                        startControlServer({
-                            path: controlSocketPath(environment),
-                            paneId,
-                            notifications: {
-                                publish: (notification) =>
-                                    Runtime.runPromise(runtime)(
-                                        Queue.offer(notifications, notification).pipe(
-                                            Effect.asVoid,
-                                        ),
-                                    ),
-                            },
-                        }),
-                    catch: (cause) => cause,
-                }),
-                (server) =>
-                    Effect.promise(() => server.close()).pipe(Effect.catchAllCause(Effect.die)),
-            );
 
-            return yield* makeSyncDaemon.pipe(
-                Effect.flatMap((daemon) => daemon.run),
-                Effect.provide(makeAppLayer(config, Stream.fromQueue(notifications))),
-            );
+            return yield* Effect.gen(function* () {
+                const daemon = yield* makeSyncDaemon;
+                const runtime = yield* Effect.runtime<never>();
+                const paneId = environment.HERDR_PANE_ID?.trim() || null;
+                yield* Effect.acquireRelease(
+                    Effect.tryPromise({
+                        try: () =>
+                            startControlServer({
+                                path: controlSocketPath(environment),
+                                paneId,
+                                notifications: {
+                                    publish: (notification) =>
+                                        Runtime.runPromise(runtime)(
+                                            Queue.offer(notifications, notification).pipe(
+                                                Effect.asVoid,
+                                            ),
+                                        ),
+                                },
+                                toggleEnabled: () =>
+                                    Runtime.runPromise(runtime)(daemon.toggleEnabled),
+                            }),
+                        catch: (cause) => cause,
+                    }),
+                    (server) =>
+                        Effect.promise(() => server.close()).pipe(Effect.catchAllCause(Effect.die)),
+                );
+
+                return yield* daemon.run;
+            }).pipe(Effect.provide(makeAppLayer(config, Stream.fromQueue(notifications))));
         }),
     ).pipe(Effect.provide(JsonLoggerLive));

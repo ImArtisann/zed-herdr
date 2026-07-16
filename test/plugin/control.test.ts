@@ -88,7 +88,10 @@ const createOrphanedSocket = async (path: string): Promise<void> => {
     expect(stat.uid).toBe(uid);
 };
 
-const runHealthCli = async (environment: NodeJS.ProcessEnv): Promise<CliObservation> => {
+const runControlCli = async (
+    command: "health" | "toggle",
+    environment: NodeJS.ProcessEnv,
+): Promise<CliObservation> => {
     const originalLog = console.log;
     const originalError = console.error;
     const originalExitCode = process.exitCode;
@@ -104,7 +107,7 @@ const runHealthCli = async (environment: NodeJS.ProcessEnv): Promise<CliObservat
 
     try {
         process.exitCode = undefined;
-        await Effect.runPromise(runCli(["health"], environment));
+        await Effect.runPromise(runCli([command], environment));
         return { exitCode: process.exitCode, stderr, stdout };
     } finally {
         console.log = originalLog;
@@ -128,21 +131,26 @@ const runIsolatedHealthCli = async (herdrSocket: string): Promise<IsolatedCliObs
     return { exitCode, stderr, stdout };
 };
 
-test("health CLI reports the real daemon and rejects absent or invalid control sockets", async () => {
+test("health and toggle CLIs control the real daemon and reject absent health sockets", async () => {
     const directory = await makeTemporaryDirectory();
     const herdrSocket = join(directory, "herdr.sock");
     const path = controlSocketPath(controlEnvironment(herdrSocket));
     let server: ControlServer | undefined;
 
     try {
+        let enabled = true;
         const started = await startControlServer({
             path,
             paneId: "injected-daemon-pane",
             notifications: { async publish() {} },
+            toggleEnabled() {
+                enabled = !enabled;
+                return enabled;
+            },
         });
         server = started;
 
-        const healthy = await runHealthCli(controlEnvironment(herdrSocket));
+        const healthy = await runControlCli("health", controlEnvironment(herdrSocket));
         const expectedResponse = { ok: true as const, daemon: started.daemon };
         expect(healthy.exitCode).toBeUndefined();
         expect(healthy.stderr).toEqual([]);
@@ -153,6 +161,11 @@ test("health CLI reports the real daemon and rejects absent or invalid control s
         expect(response).toEqual(expectedResponse);
         expect(response.daemon.identity).toBe(CONTROL_DAEMON_IDENTITY);
         expect(response.daemon.paneId).toBe("injected-daemon-pane");
+
+        const toggled = await runControlCli("toggle", controlEnvironment(herdrSocket));
+        expect(toggled.exitCode).toBeUndefined();
+        expect(toggled.stderr).toEqual([]);
+        expect(toggled.stdout).toEqual([JSON.stringify({ ok: true, enabled: false })]);
 
         await server.close();
         server = undefined;

@@ -24,7 +24,7 @@ failures; it does not expose HerdR wire objects or Zed process details.
   editor-independent workspace projection from a HerdR snapshot.
 - `WorkspaceSnapshot`: `{ focusedWorkspaceId: WorkspaceId | null, workspaces }`.
 - `WorkspaceProject`: `{ workspaceId, name, cwd, gitRoot, source: "worktree" | "plugin",
-  isLinkedWorktree }`, a record after path and Git-root resolution.
+isLinkedWorktree }`, a record after path and Git-root resolution.
 - `WorkspaceCwdHint`: `{ workspaceId, cwd }`, the plugin hook's fallback path signal.
 
 The shared text fields are nonempty and bounded to 4,096 characters. `WorkspaceSourceEvent` is the
@@ -57,7 +57,7 @@ them:
 - Resolution: `WorkspaceResolutionError.operation` is
   `"resolve_checkout_path" | "resolve_cwd_hint" | "stat" | "git_root"`; its `reason` is
   `"missing_path" | "ambiguous_path" | "inaccessible_path" | "not_directory" |
-  "not_git_repository"`.
+"not_git_repository"`.
 - Source transport: `WorkspaceSourceTransportError.operation` is
   `"connect" | "request" | "subscribe" | "read"`.
 - Source protocol: `WorkspaceSourceProtocolError.operation` is

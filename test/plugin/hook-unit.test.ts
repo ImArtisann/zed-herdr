@@ -62,6 +62,14 @@ test("declares the official HerdR v0.7.3 plugin manifest", async () => {
             { command: ["bun", "install", "--frozen-lockfile"] },
             { command: ["bun", "run", "build"] },
         ],
+        actions: [
+            {
+                id: "toggle",
+                title: "Toggle Zed Workspace Sync",
+                contexts: ["workspace"],
+                command: ["bun", "./dist/index.js", "toggle"],
+            },
+        ],
         events: [
             { on: "workspace.created", command: ["bun", "./dist/index.js", "hook"] },
             { on: "workspace.focused", command: ["bun", "./dist/index.js", "hook"] },
