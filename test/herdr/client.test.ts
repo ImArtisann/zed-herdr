@@ -86,9 +86,11 @@ const snapshot = (
         readonly checkoutPath?: string;
         readonly label?: string;
         readonly protocol?: number;
+        readonly version?: string;
+        readonly protocol19Fields?: boolean;
     } = {},
 ) => ({
-    version: "0.7.3",
+    version: options.version ?? "0.7.3",
     protocol: options.protocol ?? 16,
     workspaces: [
         {
@@ -100,6 +102,7 @@ const snapshot = (
             tab_count: 0,
             active_tab_id: "tab-1",
             agent_status: "idle",
+            ...(options.protocol19Fields ? { tokens: { usage: "cpu 0% · ram 4%" } } : {}),
             worktree: {
                 repo_key: "repo-1",
                 repo_name: "repo",
@@ -124,6 +127,8 @@ const snapshotResponse = (
         readonly checkoutPath?: string;
         readonly label?: string;
         readonly protocol?: number;
+        readonly version?: string;
+        readonly protocol19Fields?: boolean;
     } = {},
 ) => ({
     id,
@@ -282,7 +287,7 @@ test("resolveHerdRSocketPath gives HERDR_SOCKET_PATH precedence over named and d
     );
 });
 
-test("sends exact newline-delimited read-only requests and gates S2 until subscription_started", async () => {
+test("accepts a protocol-19 snapshot through bootstrap and subscription", async () => {
     const server = await makeServer();
     try {
         await withClient(server.path, async (client) => {
@@ -291,7 +296,14 @@ test("sends exact newline-delimited read-only requests and gates S2 until subscr
             expect(firstSnapshot.raw.endsWith("\n")).toBe(true);
             expect(firstSnapshot.request).toMatchObject({ method: "session.snapshot", params: {} });
             expect(firstSnapshot.request.id).toMatch(/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i);
-            writeJson(firstSnapshot.socket, snapshotResponse(firstSnapshot.request.id));
+            writeJson(
+                firstSnapshot.socket,
+                snapshotResponse(firstSnapshot.request.id, {
+                    protocol: 19,
+                    version: "0.8.0",
+                    protocol19Fields: true,
+                }),
+            );
 
             const subscribe = await server.requests.take();
             expect(subscribe.raw.endsWith("\n")).toBe(true);
@@ -452,16 +464,24 @@ test("rejects matching HerdR error responses without sending another method", as
     }
 });
 
-test("grows failed bootstrap backoff and resets the next acknowledged disconnect to 100 ms", async () => {
+test("rejects unsupported protocols during bootstrap and grows backoff", async () => {
     const server = await makeServer();
     const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
     vi.useFakeTimers();
     try {
         await withClient(server.path, async (client) => {
-            for (const delay of [100, 200, 400, 800, 1_600, 3_200, 5_000]) {
+            for (const [protocol, delay] of [
+                [15, 100],
+                [17, 200],
+                [18, 400],
+                [20, 800],
+                [15, 1_600],
+                [17, 3_200],
+                [18, 5_000],
+            ] as const) {
                 const request = await server.requests.take();
                 expect(request.request.method).toBe("session.snapshot");
-                writeJson(request.socket, snapshotResponse(request.request.id, { protocol: 15 }));
+                writeJson(request.socket, snapshotResponse(request.request.id, { protocol }));
                 await takeClosedMethod(server, "session.snapshot");
                 await flushMicrotasks();
                 vi.advanceTimersByTime(delay);

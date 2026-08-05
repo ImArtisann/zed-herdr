@@ -2,7 +2,7 @@
 
 [![Plugin Demo](https://img.youtube.com/vi/Q_i-IKda7hE/maxresdefault.jpg)](https://youtu.be/Q_i-IKda7hE)
 
-HerdR plugin `artisann.zed-herdr` keeps the active HerdR workspace available in Zed without taking ownership of either application. It supports macOS and Linux, HerdR **0.7.3+** using protocol **16**, Bun, Git, and Zed with its `zed` CLI available.
+HerdR plugin `artisann.zed-herdr` keeps the active HerdR workspace available in Zed without taking ownership of either application. It supports macOS and Linux, HerdR **0.7.3** using protocol **16** or HerdR **0.8.0** using protocol **19**, Bun, Git, and Zed with its `zed` CLI available.
 
 For contributor architecture and subsystem internals, see [the documentation index](docs/README.md).
 
@@ -121,7 +121,7 @@ action target but leaves the user-configured keybinding in place.
 
 ## Troubleshooting
 
-- **Protocol mismatch:** use HerdR 0.7.3 or later with protocol 16. A different protocol is rejected rather than guessed; update the compatible HerdR/plugin pair, rebuild, and relink if needed.
+- **Protocol mismatch:** supported HerdR/protocol pairs are 0.7.3/16 and 0.8.0/19. Every other protocol is rejected rather than guessed; update the compatible HerdR/plugin pair, rebuild, and relink if needed.
 - **Socket or health failure:** confirm `HERDR_SOCKET_PATH`, `HERDR_SESSION`, and `XDG_CONFIG_HOME` describe the intended session, then inspect the plugin log and daemon pane output above. Focusing or creating a workspace will run the activation hook again.
 - **Zed errors:** ensure `ZED_BIN` points to an executable, or that `zed` is on `PATH`; inspect the daemon output for the failed `zed -e` command. The daemon leaves HerdR and existing Zed state unchanged when Zed rejects or times out.
 

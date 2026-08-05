@@ -45,7 +45,7 @@ export class WorkspaceSourceProtocolError extends Schema.TaggedError<WorkspaceSo
 export class UnsupportedHerdRProtocol extends Schema.TaggedError<UnsupportedHerdRProtocol>(
     "UnsupportedHerdRProtocol",
 )("UnsupportedHerdRProtocol", {
-    expected: Schema.Literal(16),
+    supported: Schema.Tuple(Schema.Literal(16), Schema.Literal(19)),
     actual: ErrorExitCode,
 }) {}
 

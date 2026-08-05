@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-`zed-herdr` is a private Bun/TypeScript application that keeps the active HerdR workspace available in an existing Zed session. HerdR 0.7.3 protocol 16 is authoritative for workspace state. The daemon consumes read-only HerdR snapshots/events and plugin cwd hints, resolves Git roots, then invokes only Zed's supported `zed -e <absolute-git-root>` command. It must not inspect Zed databases, replace windows, kill processes, or mutate existing HerdR panes.
+`zed-herdr` is a private Bun/TypeScript application that keeps the active HerdR workspace available in an existing Zed session. HerdR 0.7.3 protocol 16 and HerdR 0.8.0 protocol 19 are authoritative for workspace state. The daemon consumes read-only HerdR snapshots/events and plugin cwd hints, resolves Git roots, then invokes only Zed's supported `zed -e <absolute-git-root>` command. It must not inspect Zed databases, replace windows, kill processes, or mutate existing HerdR panes.
 
-Supported hosts are macOS and Linux with Bun, Git, HerdR `>=0.7.3`, and the Zed CLI.
+Supported hosts are macOS and Linux with Bun, Git, HerdR 0.7.3 or 0.8.0, and the Zed CLI.
 
 ## Architecture & Data Flow
 
@@ -25,7 +25,7 @@ Preserve these boundaries: transport types do not enter core domain types, stale
 | `src/domain/`   | Effect `Schema` domain values and tagged error types independent of HerdR/Zed.                 |
 | `src/services/` | `Context.Tag` contracts for workspace source, cwd hints, and editor adapter.                   |
 | `src/sync/`     | Project resolution, generation-aware cache, debounce, serialization, and editor orchestration. |
-| `src/herdr/`    | Protocol-16 schemas, NDJSON framing, Unix-socket client, and core source projection.           |
+| `src/herdr/`    | Protocol-16/19 schemas, NDJSON framing, Unix-socket client, and core source projection.        |
 | `src/editor/`   | Timeout-safe, state-preserving Zed CLI adapter.                                                |
 | `src/plugin/`   | Local control protocol/socket plus hook decoding, locking, and pane startup.                   |
 | `test/`         | Bun unit, integration, socket-safety, and built-artifact E2E suites by subsystem.              |
@@ -94,7 +94,7 @@ Build before any command or E2E test that uses `dist/index.js`.
 | `src/domain/errors.ts`        | Tagged resolution, source, configuration, and editor failures.                         |
 | `src/sync/daemon.ts`          | Generation gates, cache replacement, debounce, dedupe, and structured logs.            |
 | `src/sync/resolve-project.ts` | Path precedence, directory checks, and canonical Git-root resolution.                  |
-| `src/herdr/protocol.ts`       | Protocol-16 wire compatibility boundary and method/event allowlists.                   |
+| `src/herdr/protocol.ts`       | Protocol-16/19 wire compatibility boundary and method/event allowlists.                |
 | `src/herdr/client.ts`         | Scoped sockets, bootstrap ordering, requests, reconnects, and generation cancellation. |
 | `src/editor/zed.ts`           | Only supported editor integration path and timeout behavior.                           |
 | `src/plugin/control.ts`       | Owner/inode-safe control socket, exact one-frame request/response handling.            |

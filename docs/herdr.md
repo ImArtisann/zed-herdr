@@ -4,9 +4,10 @@
 
 ## Purpose
 
-The HerdR adapter turns read-only HerdR 0.7.3 protocol-16 observations into the
-[`WorkspaceSource`](services.md) consumed by the editor-independent core. `HERDR_PROTOCOL` is the
-literal `16`. Socket-path precedence remains canonical in the root
+The HerdR adapter turns read-only HerdR 0.7.3 protocol-16 and HerdR 0.8.0
+protocol-19 observations into the [`WorkspaceSource`](services.md) consumed by the
+editor-independent core. `HERDR_PROTOCOLS` is the exact supported set: `16` and `19`.
+Socket-path precedence remains canonical in the root
 [configuration and behavior](../README.md#configuration-and-behavior) runbook.
 
 ## Responsibilities

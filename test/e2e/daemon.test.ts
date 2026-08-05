@@ -42,9 +42,14 @@ const resolveArtifactPath = (
     return artifactPath;
 };
 
-const snapshot = (repoA: string, repoB: string, focusedWorkspaceId: string) => ({
-    version: "0.7.3",
-    protocol: 16,
+const snapshot = (
+    repoA: string,
+    repoB: string,
+    focusedWorkspaceId: string,
+    options: { readonly protocol?: number; readonly version?: string } = {},
+) => ({
+    version: options.version ?? "0.7.3",
+    protocol: options.protocol ?? 16,
     workspaces: [
         {
             workspace_id: "workspace-a",
@@ -55,6 +60,7 @@ const snapshot = (repoA: string, repoB: string, focusedWorkspaceId: string) => (
             tab_count: 0,
             active_tab_id: "tab-a",
             agent_status: "idle",
+            ...(options.protocol === 19 ? { tokens: { usage: "cpu 0% · ram 4%" } } : {}),
             worktree: {
                 repo_key: "repo-a",
                 repo_name: "repo-a",
@@ -72,6 +78,7 @@ const snapshot = (repoA: string, repoB: string, focusedWorkspaceId: string) => (
             tab_count: 0,
             active_tab_id: "tab-b",
             agent_status: "idle",
+            ...(options.protocol === 19 ? { tokens: { usage: "cpu 0% · ram 4%" } } : {}),
             worktree: {
                 repo_key: "repo-b",
                 repo_name: "repo-b",
@@ -300,7 +307,7 @@ test("daemon artifact override rejects relative and missing paths", () => {
     ).toThrow("Built daemon artifact does not exist");
 });
 
-test("built daemon gates editor activation through S1, subscription acknowledgement, and S2", async () => {
+test("built daemon supports protocol-19 activation through S1, subscription acknowledgement, and S2", async () => {
     const artifactPath = resolveArtifactPath({});
     const directory = await mkdtemp(join(tmpdir(), "zh-e2e-"));
     const herdr = new HerdRServer(join(directory, "herdr.sock"));
@@ -316,8 +323,9 @@ test("built daemon gates editor activation through S1, subscription acknowledgem
             createGitRepository(repoAPath),
             createGitRepository(repoBPath),
         ]);
-        const focusedA = snapshot(repoA, repoB, "workspace-a");
-        const focusedB = snapshot(repoA, repoB, "workspace-b");
+        const protocol19 = { protocol: 19, version: "0.8.0" };
+        const focusedA = snapshot(repoA, repoB, "workspace-a", protocol19);
+        const focusedB = snapshot(repoA, repoB, "workspace-b", protocol19);
 
         daemon = Bun.spawn([process.execPath, artifactPath, "daemon"], {
             env: {

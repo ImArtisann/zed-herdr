@@ -3,8 +3,12 @@ import * as Schema from "effect/Schema";
 
 import { UnsupportedHerdRProtocol } from "../domain/errors.ts";
 
-/** The only HerdR wire protocol revision supported by this transport. */
-export const HERDR_PROTOCOL = 16 as const;
+/** HerdR wire protocol revisions supported by this transport. */
+export const HERDR_PROTOCOLS = [16, 19] as const;
+export type HerdRProtocol = (typeof HERDR_PROTOCOLS)[number];
+
+const isSupportedHerdRProtocol = (protocol: number): protocol is HerdRProtocol =>
+    protocol === HERDR_PROTOCOLS[0] || protocol === HERDR_PROTOCOLS[1];
 
 const UnsignedInteger = Schema.Number.pipe(Schema.int(), Schema.nonNegative());
 const HerdRId = Schema.String;
@@ -126,7 +130,7 @@ export const PaneInfo = Schema.Struct({
 });
 export type PaneInfo = Schema.Schema.Type<typeof PaneInfo>;
 
-/** The complete snapshot fields required by protocol 16, with unrelated entries stripped. */
+/** The complete snapshot fields required by supported protocols, with unrelated entries stripped. */
 export const SessionSnapshot = Schema.Struct({
     version: Schema.String,
     protocol: UnsignedInteger,
@@ -265,8 +269,11 @@ export type LifecycleEventEnvelope = Schema.Schema.Type<typeof LifecycleEventEnv
 export const validateHerdRProtocol = (
     snapshot: SessionSnapshot,
 ): Effect.Effect<SessionSnapshot, UnsupportedHerdRProtocol> =>
-    snapshot.protocol === HERDR_PROTOCOL
+    isSupportedHerdRProtocol(snapshot.protocol)
         ? Effect.succeed(snapshot)
         : Effect.fail(
-              new UnsupportedHerdRProtocol({ expected: HERDR_PROTOCOL, actual: snapshot.protocol }),
+              new UnsupportedHerdRProtocol({
+                  supported: HERDR_PROTOCOLS,
+                  actual: snapshot.protocol,
+              }),
           );
