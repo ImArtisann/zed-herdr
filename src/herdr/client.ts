@@ -23,6 +23,7 @@ import {
 } from "../domain/workspace.ts";
 import { NdjsonDecoder, NdjsonFramingError } from "./ndjson.ts";
 import {
+    HIGHEST_TESTED_HERDR_PROTOCOL,
     HerdRErrorResponse,
     HerdRSuccessResponse,
     isLifecycleEventName,
@@ -57,8 +58,14 @@ export const resolveHerdRSocketPath = (environment: NodeJS.ProcessEnv = process.
         : `${configHome}/herdr/herdr.sock`;
 };
 
+export interface HerdRProtocolStatus {
+    readonly protocol: number | null;
+    readonly beyondTested: boolean;
+}
+
 export interface HerdRClientService {
     readonly socketPath: string;
+    readonly protocolStatus: () => HerdRProtocolStatus;
     readonly events: Stream.Stream<WorkspaceSourceEvent, never>;
     readonly snapshot: (
         generation: WorkspaceGeneration,
@@ -128,9 +135,17 @@ const decodeCoreSnapshot = (snapshot: SessionSnapshot): Either.Either<WorkspaceS
 class LiveHerdRClient implements HerdRClientService {
     readonly socketPath: string;
     readonly events: Stream.Stream<WorkspaceSourceEvent, never>;
+    readonly protocolStatus = (): HerdRProtocolStatus => ({
+        protocol: this.#negotiatedProtocol,
+        beyondTested:
+            this.#negotiatedProtocol !== null &&
+            this.#negotiatedProtocol > HIGHEST_TESTED_HERDR_PROTOCOL,
+    });
 
     #generation = 0;
     #failures = 0;
+    #negotiatedProtocol: number | null = null;
+    #warnedBeyondTested = false;
     #liveGeneration: WorkspaceGeneration | null = null;
     #subscription: Bun.Socket | null = null;
     #finishSubscription: ((cause: unknown) => void) | null = null;
@@ -183,8 +198,7 @@ class LiveHerdRClient implements HerdRClientService {
     }
 
     snapshot(generation: WorkspaceGeneration): Effect.Effect<WorkspaceSnapshot, HerdRClientError> {
-        return this.#requestLiveSnapshot(generation).pipe(
-            Effect.flatMap(validateHerdRProtocol),
+        return this.#validateProtocol(this.#requestLiveSnapshot(generation)).pipe(
             Effect.flatMap((snapshot) =>
                 this.#ensureLive(generation).pipe(
                     Effect.flatMap(() => {
@@ -202,6 +216,16 @@ class LiveHerdRClient implements HerdRClientService {
         return this.#liveGeneration === generation
             ? Effect.void
             : Effect.fail(new StaleWorkspaceGeneration({ generation }));
+    }
+    #validateProtocol(
+        snapshot: Effect.Effect<SessionSnapshot, HerdRClientError>,
+    ): Effect.Effect<SessionSnapshot, HerdRClientError> {
+        return snapshot.pipe(
+            Effect.flatMap(validateHerdRProtocol),
+            Effect.tap((validated) =>
+                Effect.sync(() => this.#recordNegotiatedProtocol(validated.protocol)),
+            ),
+        );
     }
 
     #requestLiveSnapshot(
@@ -234,6 +258,10 @@ class LiveHerdRClient implements HerdRClientService {
                 await this.#bootstrap(generation);
             } catch (cause) {
                 if (this.#stopped) {
+                    return;
+                }
+                if (cause instanceof UnsupportedHerdRProtocol) {
+                    this.#logUnsupportedProtocol(cause);
                     return;
                 }
                 this.#failures += 1;
@@ -270,13 +298,16 @@ class LiveHerdRClient implements HerdRClientService {
         } finally {
             clearTimeout(timeout);
         }
-        const validated = await Effect.runPromise(validateHerdRProtocol(initial));
-        // S1 establishes protocol compatibility only; core state is intentionally discarded.
-        void validated;
-        await this.#subscribe(generation);
+        const validation = await Effect.runPromise(
+            Effect.either(this.#validateProtocol(Effect.succeed(initial))),
+        );
+        if (Either.isLeft(validation)) {
+            throw validation.left;
+        }
+        await this.#subscribe(generation, validation.right.protocol);
     }
 
-    #subscribe(generation: WorkspaceGeneration): Promise<void> {
+    #subscribe(generation: WorkspaceGeneration, protocol: number): Promise<void> {
         const acknowledged = Promise.withResolvers<void>();
         const finished = Promise.withResolvers<void>();
         const id = crypto.randomUUID();
@@ -422,7 +453,7 @@ class LiveHerdRClient implements HerdRClientService {
                     return;
                 }
                 this.#subscription = connected;
-                writeReadOnlyRequest(connected, makeEventsSubscribeRequest(id));
+                writeReadOnlyRequest(connected, makeEventsSubscribeRequest(id, protocol));
             },
             (cause: unknown) => finish(transportError("connect", cause)),
         );
@@ -598,6 +629,30 @@ class LiveHerdRClient implements HerdRClientService {
 
     #publish(event: WorkspaceSourceEvent): void {
         void Effect.runPromise(PubSub.publish(this.#eventPubSub, event));
+    }
+
+    #recordNegotiatedProtocol(protocol: number): void {
+        this.#negotiatedProtocol = protocol;
+        if (protocol <= HIGHEST_TESTED_HERDR_PROTOCOL || this.#warnedBeyondTested) {
+            return;
+        }
+        this.#warnedBeyondTested = true;
+        Runtime.runFork(this.#runtime)(
+            Effect.logWarning("herdr_protocol_beyond_tested").pipe(
+                Effect.annotateLogs({
+                    protocol,
+                    highest_tested_protocol: HIGHEST_TESTED_HERDR_PROTOCOL,
+                }),
+            ),
+        );
+    }
+
+    #logUnsupportedProtocol(cause: UnsupportedHerdRProtocol): void {
+        Runtime.runFork(this.#runtime)(
+            Effect.logError("herdr_protocol_unsupported").pipe(
+                Effect.annotateLogs({ minimum: cause.minimum, actual: cause.actual }),
+            ),
+        );
     }
 
     #sleep(milliseconds: number): Promise<void> {

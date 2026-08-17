@@ -111,7 +111,9 @@ Exact success shapes:
         "identity": "artisann.zed-herdr:daemon",
         "paneId": null,
         "pid": 1234,
-        "startedAt": "2026-01-01T00:00:00.000Z"
+        "startedAt": "2026-01-01T00:00:00.000Z",
+        "protocol": 19,
+        "beyondTested": false
     }
 }
 ```
@@ -121,7 +123,9 @@ Exact success shapes:
 ```
 
 `paneId` is `null | string`; `pid` is a nonnegative integer and `startedAt` is a bounded ISO
-timestamp. A toggle response reports the daemon's resulting state. The exact failure shape is:
+timestamp. `protocol` is the last accepted HerdR protocol or `null` before negotiation, and
+`beyondTested` marks values above the highest tested revision. A toggle response reports the
+daemon's resulting state. The exact failure shape is:
 
 ```json
 {

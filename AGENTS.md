@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-`zed-herdr` is a private Bun/TypeScript application that keeps the active HerdR workspace available in an existing Zed session. HerdR 0.7.3 protocol 16 is authoritative for workspace state. The daemon consumes read-only HerdR snapshots/events and plugin cwd hints, resolves Git roots, then invokes only Zed's supported `zed -e <absolute-git-root>` command. It must not inspect Zed databases, replace windows, kill processes, or mutate existing HerdR panes.
+`zed-herdr` is a private Bun/TypeScript application that keeps the active HerdR workspace available in an existing Zed session. HerdR socket protocol 16 or newer is authoritative for workspace state, with compatibility tested through protocol 19. The daemon consumes read-only HerdR snapshots/events and plugin cwd hints, resolves Git roots, then invokes only Zed's supported `zed -e <absolute-git-root>` command. It must not inspect Zed databases, replace windows, kill processes, or mutate existing HerdR panes.
 
-Supported hosts are macOS and Linux with Bun, Git, HerdR `>=0.7.3`, and the Zed CLI.
+Supported hosts are macOS and Linux with Bun, Git, HerdR `>=0.7.3` reporting protocol `>=16`, and the Zed CLI.
 
 ## Architecture & Data Flow
 
@@ -25,7 +25,7 @@ Preserve these boundaries: transport types do not enter core domain types, stale
 | `src/domain/`   | Effect `Schema` domain values and tagged error types independent of HerdR/Zed.                 |
 | `src/services/` | `Context.Tag` contracts for workspace source, cwd hints, and editor adapter.                   |
 | `src/sync/`     | Project resolution, generation-aware cache, debounce, serialization, and editor orchestration. |
-| `src/herdr/`    | Protocol-16 schemas, NDJSON framing, Unix-socket client, and core source projection.           |
+| `src/herdr/`    | Minimum-protocol wire schemas, NDJSON framing, Unix-socket client, and core source projection. |
 | `src/editor/`   | Timeout-safe, state-preserving Zed CLI adapter.                                                |
 | `src/plugin/`   | Local control protocol/socket plus hook decoding, locking, and pane startup.                   |
 | `test/`         | Bun unit, integration, socket-safety, and built-artifact E2E suites by subsystem.              |
@@ -76,7 +76,7 @@ Build before any command or E2E test that uses `dist/index.js`.
 - Scope resources with `Effect.scoped`, `acquireRelease`, or finalizers. Sockets, fibers, child processes, queues, and subscriptions must be closed on success, failure, and interruption.
 - Use `Ref` for atomic state, `Queue`/`PubSub`/`Stream` for event ingress, `Deferred` plus interruption/racing for generation cancellation, and Effect `Clock` for measurable or testable time.
 - Low-level plugin control and hook modules intentionally use Bun/Promise APIs with injected interfaces. Do not force them into the Effect service graph or duplicate their socket/startup logic.
-- Keep HerdR requests read-only and allowlisted: only `session.snapshot` and `events.subscribe`. Unknown forward-compatible fields/events may be ignored, but malformed frames must be isolated and protocol values other than 16 rejected.
+- Keep HerdR requests read-only and allowlisted: only `session.snapshot` and `events.subscribe`. Decode only transport fields the core consumes, ignore unknown fields and unrelated event names, and invalidate on recognized lifecycle names without decoding discarded payloads. Protocols below 16 are terminally rejected; newer protocols are accepted, with a once-per-process warning above the highest tested revision.
 - Preserve checkout-path precedence over hook hints. Do not infer projects from `PWD`, pane metadata, focus order, or editor internals. Linked worktrees remain distinct by canonical path.
 - Never cache failed resolution or editor operations. Recheck generation before cache/editor side effects; disconnecting generation N must leave no effects while N+1 may proceed.
 - Invoke Zed without a shell and with only `-e <absolute-git-root>`. Preserve the five-second timeout, process termination, and bounded final stderr tail.
@@ -94,7 +94,7 @@ Build before any command or E2E test that uses `dist/index.js`.
 | `src/domain/errors.ts`        | Tagged resolution, source, configuration, and editor failures.                         |
 | `src/sync/daemon.ts`          | Generation gates, cache replacement, debounce, dedupe, and structured logs.            |
 | `src/sync/resolve-project.ts` | Path precedence, directory checks, and canonical Git-root resolution.                  |
-| `src/herdr/protocol.ts`       | Protocol-16 wire compatibility boundary and method/event allowlists.                   |
+| `src/herdr/protocol.ts`       | Minimum-protocol wire compatibility boundary and method/event allowlists.              |
 | `src/herdr/client.ts`         | Scoped sockets, bootstrap ordering, requests, reconnects, and generation cancellation. |
 | `src/editor/zed.ts`           | Only supported editor integration path and timeout behavior.                           |
 | `src/plugin/control.ts`       | Owner/inode-safe control socket, exact one-frame request/response handling.            |

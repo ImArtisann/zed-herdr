@@ -138,12 +138,17 @@ const rawRequest = async (
     });
 
 const withControlServer = async (
-    body: (path: string, notifications: Array<HookNotification>) => Promise<void>,
+    body: (
+        path: string,
+        notifications: Array<HookNotification>,
+        setProtocolStatus: (protocol: number | null, beyondTested: boolean) => void,
+    ) => Promise<void>,
 ): Promise<void> => {
     const directory = await makeTemporaryDirectory();
     const path = `${directory}/control.sock`;
     const notifications: Array<HookNotification> = [];
     let enabled = true;
+    let protocolStatus = { protocol: null as number | null, beyondTested: false };
     const server = await startControlServer({
         path,
         paneId: "daemon-pane",
@@ -156,10 +161,13 @@ const withControlServer = async (
             enabled = !enabled;
             return enabled;
         },
+        protocolStatus: () => protocolStatus,
     });
 
     try {
-        await body(path, notifications);
+        await body(path, notifications, (protocol, beyondTested) => {
+            protocolStatus = { protocol, beyondTested };
+        });
     } finally {
         await server.close();
         await rm(directory, { force: true, recursive: true });
@@ -286,7 +294,8 @@ test("rejects a foreign-owned control socket directory when ownership can be cha
 });
 
 test("returns exact health and notify responses without trusting client pane fields", async () => {
-    await withControlServer(async (path, notifications) => {
+    await withControlServer(async (path, notifications, setProtocolStatus) => {
+        setProtocolStatus(19, false);
         const health = await rawRequest(path, [
             JSON.stringify({ type: "health", paneId: "attacker-pane" }),
             "\n",
@@ -298,6 +307,8 @@ test("returns exact health and notify responses without trusting client pane fie
                 readonly paneId: string;
                 readonly pid: number;
                 readonly startedAt: string;
+                readonly protocol: number | null;
+                readonly beyondTested: boolean;
             };
         };
         expect(decodedHealth.ok).toBe(true);
@@ -305,6 +316,8 @@ test("returns exact health and notify responses without trusting client pane fie
         expect(decodedHealth.daemon.paneId).toBe("daemon-pane");
         expect(decodedHealth.daemon.pid).toBe(process.pid);
         expect(decodedHealth.daemon.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+        expect(decodedHealth.daemon.protocol).toBe(19);
+        expect(decodedHealth.daemon.beyondTested).toBe(false);
 
         expect(
             JSON.parse(await rawRequest(path, [JSON.stringify({ type: "health" }), "\r\n"])),
@@ -324,11 +337,14 @@ test("returns exact health and notify responses without trusting client pane fie
             '{"ok":true,"enabled":true}',
         );
 
+        setProtocolStatus(20, true);
         const daemon = await healthControl(path);
         expect(daemon).toMatchObject({
             identity: "artisann.zed-herdr:daemon",
             paneId: "daemon-pane",
             pid: process.pid,
+            protocol: 20,
+            beyondTested: true,
         });
     });
 });

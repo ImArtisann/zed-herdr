@@ -81,13 +81,15 @@ class AsyncQueue<Value> {
 const generation = (value: number): WorkspaceGeneration => value as WorkspaceGeneration;
 const workspaceId = (value: string): WorkspaceId => value as WorkspaceId;
 
-const snapshot = (
-    options: {
-        readonly checkoutPath?: string;
-        readonly label?: string;
-        readonly protocol?: number;
-    } = {},
-) => ({
+interface SnapshotOptions {
+    readonly checkoutPath?: string;
+    readonly label?: string;
+    readonly protocol?: number;
+    readonly agentStatus?: string;
+    readonly includeUnknownField?: boolean;
+}
+
+const snapshot = (options: SnapshotOptions = {}) => ({
     version: "0.7.3",
     protocol: options.protocol ?? 16,
     workspaces: [
@@ -99,7 +101,7 @@ const snapshot = (
             pane_count: 0,
             tab_count: 0,
             active_tab_id: "tab-1",
-            agent_status: "idle",
+            agent_status: options.agentStatus ?? "idle",
             worktree: {
                 repo_key: "repo-1",
                 repo_name: "repo",
@@ -116,16 +118,12 @@ const snapshot = (
     focused_workspace_id: "workspace-1",
     focused_tab_id: "tab-1",
     focused_pane_id: null,
+    ...(options.includeUnknownField
+        ? { future_snapshot_field: { introduced_in_protocol: options.protocol ?? 16 } }
+        : {}),
 });
 
-const snapshotResponse = (
-    id: string,
-    options: {
-        readonly checkoutPath?: string;
-        readonly label?: string;
-        readonly protocol?: number;
-    } = {},
-) => ({
+const snapshotResponse = (id: string, options: SnapshotOptions = {}) => ({
     id,
     result: { type: "session_snapshot", snapshot: snapshot(options) },
 });
@@ -354,6 +352,82 @@ test("sends exact newline-delimited read-only requests and gates S2 until subscr
         await server.close();
     }
 });
+test("accepts newer protocols and ignores unconsumed status and snapshot fields", async () => {
+    const server = await makeServer();
+    try {
+        await withClient(server.path, async (client) => {
+            const options = {
+                protocol: 17,
+                agentStatus: "waiting_for_review",
+                includeUnknownField: true,
+            } satisfies SnapshotOptions;
+            const firstSnapshot = await server.requests.take();
+            writeJson(firstSnapshot.socket, snapshotResponse(firstSnapshot.request.id, options));
+
+            const subscribe = await server.requests.take();
+            writeJson(subscribe.socket, subscriptionStarted(subscribe.request.id));
+            await takeEvents(client, 1);
+            expect(client.protocolStatus()).toEqual({ protocol: 17, beyondTested: false });
+
+            const secondSnapshotPromise = runSnapshot(client, 1);
+            const secondSnapshot = await server.requests.take();
+            writeJson(
+                secondSnapshot.socket,
+                snapshotResponse(secondSnapshot.request.id, { ...options, protocol: 20 }),
+            );
+            expect((await secondSnapshotPromise).workspaces[0]?.name).toBe("alpha");
+            expect(client.protocolStatus()).toEqual({ protocol: 20, beyondTested: true });
+        });
+    } finally {
+        await server.close();
+    }
+});
+test("uses the protocol-19 subscription set and accepts its workspace events", async () => {
+    const server = await makeServer();
+    try {
+        await withClient(server.path, async (client) => {
+            const firstSnapshot = await server.requests.take();
+            writeJson(
+                firstSnapshot.socket,
+                snapshotResponse(firstSnapshot.request.id, { protocol: 19 }),
+            );
+
+            const subscribe = await server.requests.take();
+            expect(subscribe.request).toEqual({
+                id: subscribe.request.id,
+                method: "events.subscribe",
+                params: {
+                    subscriptions: [
+                        { type: "workspace.created" },
+                        { type: "workspace.updated" },
+                        { type: "workspace.renamed" },
+                        { type: "workspace.moved" },
+                        { type: "workspace.closed" },
+                        { type: "workspace.focused" },
+                        { type: "worktree.created" },
+                        { type: "worktree.opened" },
+                        { type: "worktree.removed" },
+                        { type: "workspace.metadata_updated" },
+                        { type: "workspace.reordered" },
+                    ],
+                },
+            });
+            const events = takeEvents(client, 3);
+            subscribe.socket.write(
+                `${JSON.stringify(subscriptionStarted(subscribe.request.id))}\n${JSON.stringify({ event: "workspace_metadata_updated", data: null })}\n${JSON.stringify({ event: "workspace_reordered", data: { future: true } })}\n`,
+            );
+
+            expect(await events).toEqual([
+                { _tag: "Invalidated", generation: generation(1) },
+                { _tag: "Invalidated", generation: generation(1) },
+                { _tag: "Invalidated", generation: generation(1) },
+            ]);
+            expect(client.protocolStatus()).toEqual({ protocol: 19, beyondTested: false });
+        });
+    } finally {
+        await server.close();
+    }
+});
 
 test("incrementally decodes split UTF-8 and a trailing S2 frame", async () => {
     const server = await makeServer();
@@ -382,7 +456,7 @@ test("incrementally decodes split UTF-8 and a trailing S2 frame", async () => {
     }
 });
 
-test("skips malformed frames, ignores pre-ack lifecycle replay, and emits exactly three post-ack events", async () => {
+test("ignores malformed, pre-ack, and unknown events without dropping known events", async () => {
     const server = await makeServer();
     vi.useFakeTimers();
     try {
@@ -398,20 +472,23 @@ test("skips malformed frames, ignores pre-ack lifecycle replay, and emits exactl
             subscribe.socket.write("not-json\n");
             writeJson(subscribe.socket, focusedEvent());
             subscribe.socket.write(
-                `${JSON.stringify(subscriptionStarted(subscribe.request.id))}\n${JSON.stringify({ event: "workspace_focused", data: { type: "workspace_focused" } })}\n${JSON.stringify(focusedEvent())}\n${JSON.stringify(focusedEvent())}\n`,
+                `${JSON.stringify(subscriptionStarted(subscribe.request.id))}\n${JSON.stringify({ event: "workspace_future_event", data: { workspace_ids: [] } })}\n${JSON.stringify({ event: "workspace_focused", data: { type: "future_shape", agent_status: "waiting_for_review" } })}\n${JSON.stringify(focusedEvent())}\n${JSON.stringify(focusedEvent())}\n`,
             );
 
-            expect(await Promise.all([events.take(), events.take(), events.take()])).toEqual([
+            expect(
+                await Promise.all([events.take(), events.take(), events.take(), events.take()]),
+            ).toEqual([
+                { _tag: "Invalidated", generation: generation(1) },
                 { _tag: "Invalidated", generation: generation(1) },
                 { _tag: "Invalidated", generation: generation(1) },
                 { _tag: "Invalidated", generation: generation(1) },
             ]);
-            const fourth = Promise.race([
+            const fifth = Promise.race([
                 events.take().then(() => "event"),
                 new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 25)),
             ]);
             vi.advanceTimersByTime(25);
-            expect(await fourth).toBe("timeout");
+            expect(await fifth).toBe("timeout");
         });
     } finally {
         await server.close();
@@ -452,6 +529,27 @@ test("rejects matching HerdR error responses without sending another method", as
     }
 });
 
+test("rejects protocol 15 terminally without subscribing or reconnecting", async () => {
+    const server = await makeServer();
+    vi.useFakeTimers();
+    try {
+        await withClient(server.path, async (client) => {
+            const request = await server.requests.take();
+            writeJson(request.socket, snapshotResponse(request.request.id, { protocol: 15 }));
+            await takeClosedMethod(server, "session.snapshot");
+            await flushMicrotasks();
+
+            expect(client.protocolStatus()).toEqual({ protocol: null, beyondTested: false });
+            vi.advanceTimersByTime(60_000);
+            await flushMicrotasks();
+            expect(server.requests.size).toBe(0);
+        });
+    } finally {
+        vi.useRealTimers();
+        await server.close();
+    }
+});
+
 test("grows failed bootstrap backoff and resets the next acknowledged disconnect to 100 ms", async () => {
     const server = await makeServer();
     const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
@@ -461,7 +559,10 @@ test("grows failed bootstrap backoff and resets the next acknowledged disconnect
             for (const delay of [100, 200, 400, 800, 1_600, 3_200, 5_000]) {
                 const request = await server.requests.take();
                 expect(request.request.method).toBe("session.snapshot");
-                writeJson(request.socket, snapshotResponse(request.request.id, { protocol: 15 }));
+                writeJson(request.socket, {
+                    id: request.request.id,
+                    error: { code: "unavailable", message: "temporary bootstrap failure" },
+                });
                 await takeClosedMethod(server, "session.snapshot");
                 await flushMicrotasks();
                 vi.advanceTimersByTime(delay);

@@ -2,7 +2,7 @@
 
 [![Plugin Demo](https://img.youtube.com/vi/Q_i-IKda7hE/maxresdefault.jpg)](https://youtu.be/Q_i-IKda7hE)
 
-HerdR plugin `artisann.zed-herdr` keeps the active HerdR workspace available in Zed without taking ownership of either application. It supports macOS and Linux, HerdR **0.7.3+** using protocol **16**, Bun, Git, and Zed with its `zed` CLI available.
+HerdR plugin `artisann.zed-herdr` keeps the active HerdR workspace available in Zed without taking ownership of either application. It supports macOS and Linux, HerdR **0.7.3+** reporting protocol **16 or newer** (tested through protocol **19**), Bun, Git, and Zed with its `zed` CLI available.
 
 For contributor architecture and subsystem internals, see [the documentation index](docs/README.md).
 
@@ -47,12 +47,14 @@ A successful response is JSON shaped like:
         "identity": "artisann.zed-herdr:daemon",
         "paneId": "<pane-id>",
         "pid": 1234,
-        "startedAt": "2026-01-01T00:00:00.000Z"
+        "startedAt": "2026-01-01T00:00:00.000Z",
+        "protocol": 19,
+        "beyondTested": false
     }
 }
 ```
 
-`identity` identifies this plugin's owner-validated local daemon, `paneId` is the plugin pane that hosts it (or `null` when not injected by HerdR), and `pid`/`startedAt` identify that daemon instance. Exit status `1` means no valid matching daemon answered; it does not start one.
+`identity` identifies this plugin's owner-validated local daemon, `paneId` is the plugin pane that hosts it (or `null` when not injected by HerdR), and `pid`/`startedAt` identify that daemon instance. `protocol` is the last protocol accepted from HerdR, or `null` before negotiation; `beyondTested` is true when it is newer than protocol 19. Exit status `1` means no valid matching daemon answered; it does not start one.
 
 Use the plugin registry and plugin log to inspect the installation:
 
@@ -121,7 +123,7 @@ action target but leaves the user-configured keybinding in place.
 
 ## Troubleshooting
 
-- **Protocol mismatch:** use HerdR 0.7.3 or later with protocol 16. A different protocol is rejected rather than guessed; update the compatible HerdR/plugin pair, rebuild, and relink if needed.
+- **Protocol mismatch:** HerdR must report protocol 16 or newer. A value below 16 is logged as `herdr_protocol_unsupported` and stops reconnecting rather than guessing or downgrading. Newer values are accepted; values above the highest tested protocol are reported by `health` with `beyondTested: true` and log `herdr_protocol_beyond_tested` once.
 - **Socket or health failure:** confirm `HERDR_SOCKET_PATH`, `HERDR_SESSION`, and `XDG_CONFIG_HOME` describe the intended session, then inspect the plugin log and daemon pane output above. Focusing or creating a workspace will run the activation hook again.
 - **Zed errors:** ensure `ZED_BIN` points to an executable, or that `zed` is on `PATH`; inspect the daemon output for the failed `zed -e` command. The daemon leaves HerdR and existing Zed state unchanged when Zed rejects or times out.
 

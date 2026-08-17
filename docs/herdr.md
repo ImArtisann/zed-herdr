@@ -4,9 +4,10 @@
 
 ## Purpose
 
-The HerdR adapter turns read-only HerdR 0.7.3 protocol-16 observations into the
-[`WorkspaceSource`](services.md) consumed by the editor-independent core. `HERDR_PROTOCOL` is the
-literal `16`. Socket-path precedence remains canonical in the root
+The HerdR adapter turns read-only observations from HerdR 0.7.3 or newer into the
+[`WorkspaceSource`](services.md) consumed by the editor-independent core.
+`MINIMUM_HERDR_PROTOCOL` is `16`; compatibility is tested through
+`HIGHEST_TESTED_HERDR_PROTOCOL` `19`. Socket-path precedence remains canonical in the root
 [configuration and behavior](../README.md#configuration-and-behavior) runbook.
 
 ## Responsibilities
@@ -16,7 +17,7 @@ Only two methods can leave the client:
 - `session.snapshot`
 - `events.subscribe`
 
-The exact subscription set is:
+The base subscription set for protocols 16 through 18 is:
 
 - `workspace.created`
 - `workspace.updated`
@@ -28,8 +29,15 @@ The exact subscription set is:
 - `worktree.opened`
 - `worktree.removed`
 
-No HerdR mutation is sent. Forward-compatible unrelated events and fields do not enter the domain
-projection.
+Protocol 19 adds `workspace.metadata_updated` and `workspace.reordered`. The selection is
+protocol-gated because HerdR rejects the entire `events.subscribe` request when any subscription
+type is unknown; sending the protocol-19 names to HerdR 0.7.3 would prevent the generation from
+becoming live.
+
+No HerdR mutation is sent. Snapshot schemas decode only the protocol, workspace fields, and focus
+identifier consumed by the core projection. Unknown transport fields are discarded. Recognized
+lifecycle names invalidate the snapshot without decoding their discarded payloads; unrelated event
+names are ignored.
 
 ## Contracts and state
 
@@ -40,24 +48,26 @@ the most recent source event.
 
 `makeHerdRWorkspaceSource` exposes only `snapshot` and `events`.
 `HerdRWorkspaceSourceLive` projects the scoped `HerdRClient` onto the core `WorkspaceSource` tag.
-Transport-only panes, tabs, layouts, and agents are discarded before the domain snapshot.
+The client separately exposes its last negotiated protocol to the local health server; this
+transport status does not enter the core domain.
 
 ## Flow
 
 For generation $N$:
 
-1. **S1 protocol gate.** A separate `session.snapshot` request validates that the peer reports
-   protocol `16`. Its workspace state is deliberately discarded.
-2. The client opens a subscription socket and sends `events.subscribe` with the exact lifecycle
-   set above.
+1. **S1 protocol gate.** A separate `session.snapshot` request requires protocol 16 or newer. Its
+   workspace state is deliberately discarded. The accepted protocol is retained for health and
+   subscription selection.
+2. The client opens a subscription socket and sends `events.subscribe` with the protocol-selected
+   lifecycle set above.
 3. Only a matching `subscription_started` acknowledgement resets reconnect failures, marks $N$
    live, and publishes the first `Invalidated(N)`.
-4. After acknowledgement, each valid subscribed lifecycle event publishes another
-   `Invalidated(N)`. Unrelated events are ignored.
+4. After acknowledgement, each recognized subscribed lifecycle name publishes another
+   `Invalidated(N)`, regardless of unconsumed payload shape. Unrelated event names are ignored.
 5. The [synchronization daemon](synchronization.md) receives that signal and requests **S2**, a
    fresh authoritative `session.snapshot` for $N$.
 6. S2 is protocol-validated again, checked against the live generation before and after transport
-   work, and projected into `WorkspaceSnapshot`.
+   work, and projected into the strict domain `WorkspaceSnapshot`.
 
 S1 establishes compatibility; S2 supplies state. No editor call is derived from S1.
 
@@ -70,10 +80,10 @@ size-limited by this decoder.
 An oversized unterminated partial frame is connection-fatal; it is not isolated as a recoverable
 malformed JSON frame.
 
-Empty lines are ignored. Invalid JSON and malformed relevant lifecycle frames are logged as
-`herdr_malformed_frame` and isolated so later frames can proceed. Objects without relevant events
-are filtered. A malformed response carrying the active request id is handled at that request's
-protocol boundary.
+Empty lines are ignored. Invalid JSON is logged as `herdr_malformed_frame` and isolated so later
+frames can proceed. Objects without recognized lifecycle names are filtered. A matching snapshot
+response decodes only fields consumed by protocol negotiation and the core projection, so additive
+fields and new values in discarded fields cannot strand the request until its timeout.
 
 Both the S1 bootstrap snapshot and subscription acknowledgement have five-second timeouts.
 Reconnect uses an exponential base from 100 ms through a 5 s maximum, applies ±20% jitter, and
@@ -82,8 +92,11 @@ terminates their sockets, clears the live generation, and publishes `Disconnecte
 shutdown interrupts sleep, terminates sockets, cancels requests as stale, and shuts down event
 publication.
 
-Source failures remain typed as transport, protocol, unsupported-protocol, or stale-generation
-errors. Protocol incompatibility prevents the generation from becoming live.
+Protocols below 16 fail as `UnsupportedHerdRProtocol`, log `herdr_protocol_unsupported`, and
+terminate the client run loop without reconnecting. Newer protocols are accepted. A value above
+protocol 19 logs `herdr_protocol_beyond_tested` once and sets `beyondTested` in health. Other source
+failures remain typed as transport, protocol, or stale-generation errors and retain reconnect
+behavior.
 
 ## Implementation and tests
 
