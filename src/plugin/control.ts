@@ -92,6 +92,7 @@ export interface StartControlServerOptions {
     readonly paneId: string | null;
     readonly notifications: ControlNotificationSink;
     readonly toggleEnabled?: () => boolean | Promise<boolean>;
+    readonly protocolStatus?: () => Pick<DaemonHealth, "protocol" | "beyondTested">;
 }
 
 export interface ControlServer {
@@ -430,7 +431,14 @@ const isExactControlResponse = (value: unknown): value is Record<string, unknown
         return (
             hasExactKeys(value, ["ok", "daemon"]) &&
             isRecord(daemon) &&
-            hasExactKeys(daemon, ["identity", "paneId", "pid", "startedAt"])
+            hasExactKeys(daemon, [
+                "identity",
+                "paneId",
+                "pid",
+                "startedAt",
+                "protocol",
+                "beyondTested",
+            ])
         );
     }
     return value.ok === false && hasExactKeys(value, ["ok", "error"]);
@@ -449,7 +457,7 @@ const responseFor = (
     encoded: string,
     notificationSink: ControlNotificationSink,
     toggleEnabled: StartControlServerOptions["toggleEnabled"],
-    daemon: DaemonHealth,
+    daemon: () => DaemonHealth,
     socket: Bun.Socket<ConnectionState>,
 ): void => {
     let raw: unknown;
@@ -467,7 +475,11 @@ const responseFor = (
     }
 
     if (decoded.right.type === "health") {
-        writeAndClose(socket, { ok: true, daemon });
+        try {
+            writeAndClose(socket, { ok: true, daemon: daemon() });
+        } catch {
+            writeAndClose(socket, { ok: false, error: "server_failure" });
+        }
         return;
     }
 
@@ -507,16 +519,25 @@ const responseFor = (
 export const startControlServer = async (
     options: StartControlServerOptions,
 ): Promise<ControlServer> => {
-    const daemonResult = Schema.decodeUnknownEither(DaemonHealth)({
-        identity: CONTROL_DAEMON_IDENTITY,
-        paneId: options.paneId,
-        pid: process.pid,
-        startedAt: new Date().toISOString(),
-    });
-    if (daemonResult._tag === "Left") {
-        throw new ControlProtocolError(options.path, "invalid daemon health");
-    }
-    const daemon = daemonResult.right;
+    const startedAt = new Date().toISOString();
+    const daemon = (): DaemonHealth => {
+        const protocolStatus = options.protocolStatus?.() ?? {
+            protocol: null,
+            beyondTested: false,
+        };
+        const daemonResult = Schema.decodeUnknownEither(DaemonHealth)({
+            identity: CONTROL_DAEMON_IDENTITY,
+            paneId: options.paneId,
+            pid: process.pid,
+            startedAt,
+            ...protocolStatus,
+        });
+        if (daemonResult._tag === "Left") {
+            throw new ControlProtocolError(options.path, "invalid daemon health");
+        }
+        return daemonResult.right;
+    };
+    void daemon();
 
     await prepareControlSocketDirectory(options.path);
     await prepareControlSocket(options.path);
@@ -648,7 +669,9 @@ export const startControlServer = async (
         let closing: Promise<void> | null = null;
         return {
             path: options.path,
-            daemon,
+            get daemon() {
+                return daemon();
+            },
             close(): Promise<void> {
                 if (listenerStopped) {
                     return Promise.resolve();

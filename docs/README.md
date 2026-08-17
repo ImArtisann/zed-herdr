@@ -2,7 +2,7 @@
 
 ## Start here
 
-This contributor reference documents the supported boundary: Bun on macOS or Linux, HerdR 0.7.3 using protocol 16, Git, and Zed through its public CLI. The root [operator runbook](../README.md) remains the canonical guide for installation, configuration, health checks, troubleshooting, and removal. Use the [compact contributor checklist](../AGENTS.md) for repository conventions and safety invariants.
+This contributor reference documents the supported boundary: Bun on macOS or Linux, HerdR 0.7.3 or newer reporting protocol 16 or newer, Git, and Zed through its public CLI. Compatibility is tested through HerdR protocol 19. The root [operator runbook](../README.md) remains the canonical guide for installation, configuration, health checks, troubleshooting, and removal. Use the [compact contributor checklist](../AGENTS.md) for repository conventions and safety invariants.
 
 For a first architecture pass, read [Architecture](architecture.md), [Domain model](domain.md), and [Service ports](services.md), then continue into the subsystem pages that own the behavior you are changing.
 
@@ -14,7 +14,7 @@ For a first architecture pass, read [Architecture](architecture.md), [Domain mod
 | [Runtime composition](runtime.md)          | CLI dispatch, configuration, Effect layers, and daemon resource scope.        | [`src/cli.ts`](../src/cli.ts), [`src/app.ts`](../src/app.ts)                 |
 | [Domain model](domain.md)                  | Editor-independent workspace values and typed failures.                       | [`src/domain/`](../src/domain/)                                              |
 | [Service ports](services.md)               | Dependency-inverted contracts consumed by the synchronization core.           | [`src/services/`](../src/services/)                                          |
-| [HerdR workspace source](herdr.md)         | Protocol-16 transport, generations, events, and source projection.            | [`src/herdr/`](../src/herdr/)                                                |
+| [HerdR workspace source](herdr.md)         | Minimum-protocol transport, generations, events, and source projection.       | [`src/herdr/`](../src/herdr/)                                                |
 | [Synchronization core](synchronization.md) | Generation gating, project resolution, cache replacement, and orchestration.  | [`src/sync/`](../src/sync/)                                                  |
 | [Plugin lifecycle and control](plugin.md)  | Hook decoding, startup contention, local control protocol, and socket safety. | [`src/plugin/`](../src/plugin/), [`herdr-plugin.toml`](../herdr-plugin.toml) |
 | [Zed editor adapter](editor.md)            | Serialized, timeout-safe `zed -e` integration.                                | [`src/editor/`](../src/editor/)                                              |

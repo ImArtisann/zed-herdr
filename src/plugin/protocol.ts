@@ -5,6 +5,7 @@ import { WorkspaceCwdHint } from "../domain/workspace.ts";
 const ControlText = Schema.String.pipe(Schema.nonEmptyString(), Schema.maxLength(4_096));
 const IsoTimestamp = Schema.String.pipe(Schema.nonEmptyString(), Schema.maxLength(64));
 const ProcessId = Schema.Number.pipe(Schema.int(), Schema.nonNegative());
+const ProtocolVersion = Schema.Number.pipe(Schema.int(), Schema.nonNegative());
 
 /** A workspace directory hint emitted by the lightweight HerdR plugin hook. */
 export const HookNotification = WorkspaceCwdHint;
@@ -43,6 +44,8 @@ export const DaemonHealth = Schema.Struct({
     paneId: Schema.NullOr(ControlText),
     pid: ProcessId,
     startedAt: IsoTimestamp,
+    protocol: Schema.NullOr(ProtocolVersion),
+    beyondTested: Schema.Boolean,
 });
 export type DaemonHealth = Schema.Schema.Type<typeof DaemonHealth>;
 

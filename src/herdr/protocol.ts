@@ -3,12 +3,15 @@ import * as Schema from "effect/Schema";
 
 import { UnsupportedHerdRProtocol } from "../domain/errors.ts";
 
-/** The only HerdR wire protocol revision supported by this transport. */
-export const HERDR_PROTOCOL = 16 as const;
+/** Oldest HerdR wire protocol revision this transport can safely consume. */
+export const MINIMUM_HERDR_PROTOCOL = 16 as const;
+
+/** Newest HerdR wire protocol revision covered by this repository's compatibility tests. */
+export const HIGHEST_TESTED_HERDR_PROTOCOL = 19 as const;
+const EXTENDED_LIFECYCLE_SUBSCRIPTIONS_PROTOCOL = 19;
 
 const UnsignedInteger = Schema.Number.pipe(Schema.int(), Schema.nonNegative());
 const HerdRId = Schema.String;
-const AgentStatus = Schema.Literal("idle", "working", "blocked", "done", "unknown");
 
 /** A request envelope before its method-specific payload is inspected. */
 export const HerdRRequestEnvelope = Schema.Struct({
@@ -29,8 +32,10 @@ export type SessionSnapshotRequest = Schema.Schema.Type<typeof SessionSnapshotRe
 export const LifecycleSubscription = Schema.Union(
     Schema.Struct({ type: Schema.Literal("workspace.created") }),
     Schema.Struct({ type: Schema.Literal("workspace.updated") }),
+    Schema.Struct({ type: Schema.Literal("workspace.metadata_updated") }),
     Schema.Struct({ type: Schema.Literal("workspace.renamed") }),
     Schema.Struct({ type: Schema.Literal("workspace.moved") }),
+    Schema.Struct({ type: Schema.Literal("workspace.reordered") }),
     Schema.Struct({ type: Schema.Literal("workspace.closed") }),
     Schema.Struct({ type: Schema.Literal("workspace.focused") }),
     Schema.Struct({ type: Schema.Literal("worktree.created") }),
@@ -39,8 +44,7 @@ export const LifecycleSubscription = Schema.Union(
 );
 export type LifecycleSubscription = Schema.Schema.Type<typeof LifecycleSubscription>;
 
-/** The exact lifecycle subscription set owned by this integration. */
-export const LifecycleSubscriptions: ReadonlyArray<LifecycleSubscription> = [
+const BASE_LIFECYCLE_SUBSCRIPTIONS: ReadonlyArray<LifecycleSubscription> = [
     { type: "workspace.created" },
     { type: "workspace.updated" },
     { type: "workspace.renamed" },
@@ -50,6 +54,12 @@ export const LifecycleSubscriptions: ReadonlyArray<LifecycleSubscription> = [
     { type: "worktree.created" },
     { type: "worktree.opened" },
     { type: "worktree.removed" },
+];
+
+const PROTOCOL_19_LIFECYCLE_SUBSCRIPTIONS: ReadonlyArray<LifecycleSubscription> = [
+    ...BASE_LIFECYCLE_SUBSCRIPTIONS,
+    { type: "workspace.metadata_updated" },
+    { type: "workspace.reordered" },
 ];
 
 export const EventsSubscribeRequest = Schema.Struct({
@@ -68,76 +78,42 @@ export type HerdRRequest = Schema.Schema.Type<typeof HerdRRequest>;
 export const makeSessionSnapshotRequest = (id: string): SessionSnapshotRequest =>
     SessionSnapshotRequest.make({ id, method: "session.snapshot", params: {} });
 
-export const makeEventsSubscribeRequest = (id: string): EventsSubscribeRequest =>
+export const makeEventsSubscribeRequest = (id: string, protocol: number): EventsSubscribeRequest =>
     EventsSubscribeRequest.make({
         id,
         method: "events.subscribe",
-        params: { subscriptions: [...LifecycleSubscriptions] },
+        params: {
+            subscriptions: [
+                ...(protocol >= EXTENDED_LIFECYCLE_SUBSCRIPTIONS_PROTOCOL
+                    ? PROTOCOL_19_LIFECYCLE_SUBSCRIPTIONS
+                    : BASE_LIFECYCLE_SUBSCRIPTIONS),
+            ],
+        },
     });
 
-/** The worktree summary embedded in a workspace listing. */
+/** The worktree fields consumed when projecting a workspace snapshot into the core domain. */
 export const WorkspaceWorktreeInfo = Schema.Struct({
-    repo_key: Schema.String,
-    repo_name: Schema.String,
-    repo_root: Schema.String,
     checkout_path: Schema.String,
     is_linked_worktree: Schema.Boolean,
 });
 export type WorkspaceWorktreeInfo = Schema.Schema.Type<typeof WorkspaceWorktreeInfo>;
 
-/** A HerdR workspace as returned by snapshots and workspace lifecycle events. */
+/** The workspace fields consumed when projecting a snapshot into the core domain. */
 export const WorkspaceInfo = Schema.Struct({
     workspace_id: HerdRId,
-    number: UnsignedInteger,
     label: Schema.String,
-    focused: Schema.Boolean,
-    pane_count: UnsignedInteger,
-    tab_count: UnsignedInteger,
-    active_tab_id: Schema.String,
-    agent_status: AgentStatus,
     worktree: Schema.optional(Schema.NullOr(WorkspaceWorktreeInfo)),
 });
 export type WorkspaceInfo = Schema.Schema.Type<typeof WorkspaceInfo>;
 
-/** A physical git worktree used by worktree lifecycle events. */
-export const WorktreeInfo = Schema.Struct({
-    path: Schema.String,
-    is_bare: Schema.Boolean,
-    is_detached: Schema.Boolean,
-    is_prunable: Schema.Boolean,
-    is_linked_worktree: Schema.Boolean,
-    label: Schema.String,
-    branch: Schema.optional(Schema.NullOr(Schema.String)),
-    open_workspace_id: Schema.optional(Schema.NullOr(HerdRId)),
-});
-export type WorktreeInfo = Schema.Schema.Type<typeof WorktreeInfo>;
-
-/** Pane data retained at the transport boundary; it never reaches the core snapshot. */
-export const PaneInfo = Schema.Struct({
-    pane_id: HerdRId,
-    terminal_id: HerdRId,
-    workspace_id: HerdRId,
-    tab_id: HerdRId,
-    focused: Schema.Boolean,
-    agent_status: AgentStatus,
-    revision: UnsignedInteger,
-    cwd: Schema.optional(Schema.NullOr(Schema.String)),
-    foreground_cwd: Schema.optional(Schema.NullOr(Schema.String)),
-});
-export type PaneInfo = Schema.Schema.Type<typeof PaneInfo>;
-
-/** The complete snapshot fields required by protocol 16, with unrelated entries stripped. */
+/**
+ * The snapshot fields consumed by protocol negotiation and the core projection.
+ * Unknown transport fields are intentionally discarded at this boundary.
+ */
 export const SessionSnapshot = Schema.Struct({
-    version: Schema.String,
     protocol: UnsignedInteger,
     workspaces: Schema.Array(WorkspaceInfo),
-    tabs: Schema.Array(Schema.Unknown),
-    panes: Schema.Array(PaneInfo),
-    layouts: Schema.Array(Schema.Unknown),
-    agents: Schema.Array(Schema.Unknown),
     focused_workspace_id: Schema.optional(Schema.NullOr(HerdRId)),
-    focused_tab_id: Schema.optional(Schema.NullOr(HerdRId)),
-    focused_pane_id: Schema.optional(Schema.NullOr(HerdRId)),
 });
 export type SessionSnapshot = Schema.Schema.Type<typeof SessionSnapshot>;
 
@@ -168,105 +144,56 @@ export const HerdRErrorResponse = Schema.Struct({
 });
 export type HerdRErrorResponse = Schema.Schema.Type<typeof HerdRErrorResponse>;
 
-export const WorkspaceCreated = Schema.Struct({
-    type: Schema.Literal("workspace_created"),
-    workspace: WorkspaceInfo,
-});
-export const WorkspaceUpdated = Schema.Struct({
-    type: Schema.Literal("workspace_updated"),
-    workspace: WorkspaceInfo,
-});
-export const WorkspaceRenamed = Schema.Struct({
-    type: Schema.Literal("workspace_renamed"),
-    workspace_id: HerdRId,
-    label: Schema.String,
-});
-export const WorkspaceMoved = Schema.Struct({
-    type: Schema.Literal("workspace_moved"),
-    workspace_id: HerdRId,
-    insert_index: UnsignedInteger,
-    workspaces: Schema.Array(WorkspaceInfo),
-});
-export const WorkspaceClosed = Schema.Struct({
-    type: Schema.Literal("workspace_closed"),
-    workspace_id: HerdRId,
-    workspace: Schema.optional(Schema.NullOr(WorkspaceInfo)),
-});
-export const WorkspaceFocused = Schema.Struct({
-    type: Schema.Literal("workspace_focused"),
-    workspace_id: HerdRId,
-});
-export const WorktreeCreated = Schema.Struct({
-    type: Schema.Literal("worktree_created"),
-    workspace: WorkspaceInfo,
-    worktree: WorktreeInfo,
-});
-export const WorktreeOpened = Schema.Struct({
-    type: Schema.Literal("worktree_opened"),
-    workspace: WorkspaceInfo,
-    worktree: WorktreeInfo,
-    already_open: Schema.Boolean,
-});
-export const WorktreeRemoved = Schema.Struct({
-    type: Schema.Literal("worktree_removed"),
-    workspace_id: HerdRId,
-    workspace: Schema.optional(Schema.NullOr(WorkspaceInfo)),
-    worktree: WorktreeInfo,
-    forced: Schema.Boolean,
-});
+const lifecycleEventNames = [
+    "workspace_metadata_updated",
+    "workspace_created",
+    "workspace_updated",
+    "workspace_renamed",
+    "workspace_reordered",
+    "workspace_moved",
+    "workspace_closed",
+    "workspace_focused",
+    "worktree_created",
+    "worktree_opened",
+    "worktree_removed",
+] as const;
 
-/** Lifecycle payloads use underscored response event names. */
-export const LifecycleEventData = Schema.Union(
-    WorkspaceCreated,
-    WorkspaceUpdated,
-    WorkspaceRenamed,
-    WorkspaceMoved,
-    WorkspaceClosed,
-    WorkspaceFocused,
-    WorktreeCreated,
-    WorktreeOpened,
-    WorktreeRemoved,
-);
-export type LifecycleEventData = Schema.Schema.Type<typeof LifecycleEventData>;
-
-const lifecycleEventNames: Record<LifecycleEventName, true> = {
+const lifecycleEventNameLookup: Record<(typeof lifecycleEventNames)[number], true> = {
     workspace_created: true,
     workspace_updated: true,
     workspace_renamed: true,
     workspace_moved: true,
+    workspace_metadata_updated: true,
     workspace_closed: true,
     workspace_focused: true,
     worktree_created: true,
+    workspace_reordered: true,
     worktree_opened: true,
     worktree_removed: true,
 };
+const LifecycleEventNameSchema = Schema.Literal(...lifecycleEventNames);
 
-export type LifecycleEventName = LifecycleEventData["type"];
+export type LifecycleEventName = (typeof lifecycleEventNames)[number];
 
 /** Returns false for unrelated events before schema decoding is attempted. */
 export const isLifecycleEventName = (event: unknown): event is LifecycleEventName =>
-    typeof event === "string" && Object.hasOwn(lifecycleEventNames, event);
+    typeof event === "string" && Object.hasOwn(lifecycleEventNameLookup, event);
 
-/** Required envelopes keep the envelope event and data.type coupled. */
-export const LifecycleEventEnvelope = Schema.Union(
-    Schema.Struct({ event: Schema.Literal("workspace_created"), data: WorkspaceCreated }),
-    Schema.Struct({ event: Schema.Literal("workspace_updated"), data: WorkspaceUpdated }),
-    Schema.Struct({ event: Schema.Literal("workspace_renamed"), data: WorkspaceRenamed }),
-    Schema.Struct({ event: Schema.Literal("workspace_moved"), data: WorkspaceMoved }),
-    Schema.Struct({ event: Schema.Literal("workspace_closed"), data: WorkspaceClosed }),
-    Schema.Struct({ event: Schema.Literal("workspace_focused"), data: WorkspaceFocused }),
-    Schema.Struct({ event: Schema.Literal("worktree_created"), data: WorktreeCreated }),
-    Schema.Struct({ event: Schema.Literal("worktree_opened"), data: WorktreeOpened }),
-    Schema.Struct({ event: Schema.Literal("worktree_removed"), data: WorktreeRemoved }),
-);
+/** Lifecycle payloads are intentionally ignored; every recognized event invalidates the snapshot. */
+export const LifecycleEventEnvelope = Schema.Struct({
+    event: LifecycleEventNameSchema,
+});
 export type LifecycleEventEnvelope = Schema.Schema.Type<typeof LifecycleEventEnvelope>;
 
 /** Validate the compatibility boundary after decoding a session snapshot. */
 export const validateHerdRProtocol = (
     snapshot: SessionSnapshot,
 ): Effect.Effect<SessionSnapshot, UnsupportedHerdRProtocol> =>
-    snapshot.protocol === HERDR_PROTOCOL
+    snapshot.protocol >= MINIMUM_HERDR_PROTOCOL
         ? Effect.succeed(snapshot)
         : Effect.fail(
-              new UnsupportedHerdRProtocol({ expected: HERDR_PROTOCOL, actual: snapshot.protocol }),
+              new UnsupportedHerdRProtocol({
+                  minimum: MINIMUM_HERDR_PROTOCOL,
+                  actual: snapshot.protocol,
+              }),
           );

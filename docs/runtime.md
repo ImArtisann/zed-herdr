@@ -39,7 +39,7 @@ resolve `zed` through `PATH`.
 | Layer                       | Supplied responsibility                                     |
 | --------------------------- | ----------------------------------------------------------- |
 | `BunContext.layer`          | Bun command, filesystem, and path platform services         |
-| `HerdRWorkspaceSourceLive`  | The protocol-16 `WorkspaceSource` implementation            |
+| `HerdRWorkspaceSourceLive`  | The minimum-protocol `WorkspaceSource` implementation       |
 | `makeZedEditorAdapterLayer` | The `EditorAdapter` implementation, configured by `ZED_BIN` |
 | `WorkspaceHintSource`       | The stream supplied by the control notification queue       |
 | `Logger.json`               | Stable JSON logging for source and synchronization events   |

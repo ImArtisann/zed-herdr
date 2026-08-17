@@ -8,7 +8,7 @@ import * as Stream from "effect/Stream";
 import type { AppConfig } from "./config.ts";
 import type { WorkspaceCwdHint } from "./domain/workspace.ts";
 import { makeZedEditorAdapterLayer } from "./editor/zed.ts";
-import { HerdRClientLive } from "./herdr/client.ts";
+import { HerdRClient, HerdRClientLive } from "./herdr/client.ts";
 import { HerdRWorkspaceSourceLive } from "./herdr/workspace-source.ts";
 import { controlSocketPath, startControlServer } from "./plugin/control.ts";
 import type { HookNotification } from "./plugin/protocol.ts";
@@ -21,8 +21,9 @@ const makeWorkspaceHintSourceLive = (hints: Stream.Stream<WorkspaceCwdHint>) =>
     Layer.succeed(WorkspaceHintSource, { hints });
 
 const JsonLoggerLive = Logger.json;
+const HerdRClientLiveWithLogger = HerdRClientLive.pipe(Layer.provide(JsonLoggerLive));
 const HerdRSourceLive = HerdRWorkspaceSourceLive.pipe(
-    Layer.provide(HerdRClientLive.pipe(Layer.provide(JsonLoggerLive))),
+    Layer.provideMerge(HerdRClientLiveWithLogger),
 );
 
 export const makeAppLayer = (
@@ -48,6 +49,7 @@ export const runDaemon = (config: AppConfig, environment: NodeJS.ProcessEnv = pr
 
             return yield* Effect.gen(function* () {
                 const daemon = yield* makeSyncDaemon;
+                const herdr = yield* HerdRClient;
                 const runtime = yield* Effect.runtime<never>();
                 const paneId = environment.HERDR_PANE_ID?.trim() || null;
                 yield* Effect.acquireRelease(
@@ -66,6 +68,7 @@ export const runDaemon = (config: AppConfig, environment: NodeJS.ProcessEnv = pr
                                 },
                                 toggleEnabled: () =>
                                     Runtime.runPromise(runtime)(daemon.toggleEnabled),
+                                protocolStatus: herdr.protocolStatus,
                             }),
                         catch: (cause) => cause,
                     }),

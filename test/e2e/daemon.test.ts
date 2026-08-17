@@ -43,8 +43,8 @@ const resolveArtifactPath = (
 };
 
 const snapshot = (repoA: string, repoB: string, focusedWorkspaceId: string) => ({
-    version: "0.7.3",
-    protocol: 16,
+    version: "0.8.0",
+    protocol: 19,
     workspaces: [
         {
             workspace_id: "workspace-a",

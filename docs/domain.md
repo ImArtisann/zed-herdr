@@ -63,8 +63,8 @@ them:
 - Source protocol: `WorkspaceSourceProtocolError.operation` is
   `"decode" | "response" | "subscription"`.
 - Generation: `StaleWorkspaceGeneration` records the rejected generation.
-- Compatibility: `UnsupportedHerdRProtocol` requires the expected literal `16` and records the
-  actual nonnegative protocol number.
+- Compatibility: `UnsupportedHerdRProtocol` records the minimum and actual nonnegative protocol
+  numbers.
 - Configuration: `ConfigurationError` records a bounded key and message.
 - Editor: `EditorAdapterError.operation` is `"ensure_project" | "focus_project"` and records the
   path, optional exit code, bounded stderr, and message.
