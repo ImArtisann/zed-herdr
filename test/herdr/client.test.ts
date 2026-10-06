@@ -357,7 +357,7 @@ test("accepts newer protocols and ignores unconsumed status and snapshot fields"
     try {
         await withClient(server.path, async (client) => {
             const options = {
-                protocol: 17,
+                protocol: 22,
                 agentStatus: "waiting_for_review",
                 includeUnknownField: true,
             } satisfies SnapshotOptions;
@@ -367,16 +367,16 @@ test("accepts newer protocols and ignores unconsumed status and snapshot fields"
             const subscribe = await server.requests.take();
             writeJson(subscribe.socket, subscriptionStarted(subscribe.request.id));
             await takeEvents(client, 1);
-            expect(client.protocolStatus()).toEqual({ protocol: 17, beyondTested: false });
+            expect(client.protocolStatus()).toEqual({ protocol: 22, beyondTested: false });
 
             const secondSnapshotPromise = runSnapshot(client, 1);
             const secondSnapshot = await server.requests.take();
             writeJson(
                 secondSnapshot.socket,
-                snapshotResponse(secondSnapshot.request.id, { ...options, protocol: 20 }),
+                snapshotResponse(secondSnapshot.request.id, { ...options, protocol: 23 }),
             );
             expect((await secondSnapshotPromise).workspaces[0]?.name).toBe("alpha");
-            expect(client.protocolStatus()).toEqual({ protocol: 20, beyondTested: true });
+            expect(client.protocolStatus()).toEqual({ protocol: 23, beyondTested: true });
         });
     } finally {
         await server.close();

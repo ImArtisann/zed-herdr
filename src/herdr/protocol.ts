@@ -7,7 +7,7 @@ import { UnsupportedHerdRProtocol } from "../domain/errors.ts";
 export const MINIMUM_HERDR_PROTOCOL = 16 as const;
 
 /** Newest HerdR wire protocol revision covered by this repository's compatibility tests. */
-export const HIGHEST_TESTED_HERDR_PROTOCOL = 19 as const;
+export const HIGHEST_TESTED_HERDR_PROTOCOL = 22 as const;
 const EXTENDED_LIFECYCLE_SUBSCRIPTIONS_PROTOCOL = 19;
 
 const UnsignedInteger = Schema.Number.pipe(Schema.int(), Schema.nonNegative());

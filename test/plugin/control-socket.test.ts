@@ -295,7 +295,7 @@ test("rejects a foreign-owned control socket directory when ownership can be cha
 
 test("returns exact health and notify responses without trusting client pane fields", async () => {
     await withControlServer(async (path, notifications, setProtocolStatus) => {
-        setProtocolStatus(19, false);
+        setProtocolStatus(22, false);
         const health = await rawRequest(path, [
             JSON.stringify({ type: "health", paneId: "attacker-pane" }),
             "\n",
@@ -316,7 +316,7 @@ test("returns exact health and notify responses without trusting client pane fie
         expect(decodedHealth.daemon.paneId).toBe("daemon-pane");
         expect(decodedHealth.daemon.pid).toBe(process.pid);
         expect(decodedHealth.daemon.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-        expect(decodedHealth.daemon.protocol).toBe(19);
+        expect(decodedHealth.daemon.protocol).toBe(22);
         expect(decodedHealth.daemon.beyondTested).toBe(false);
 
         expect(
@@ -337,13 +337,13 @@ test("returns exact health and notify responses without trusting client pane fie
             '{"ok":true,"enabled":true}',
         );
 
-        setProtocolStatus(20, true);
+        setProtocolStatus(23, true);
         const daemon = await healthControl(path);
         expect(daemon).toMatchObject({
             identity: "artisann.zed-herdr:daemon",
             paneId: "daemon-pane",
             pid: process.pid,
-            protocol: 20,
+            protocol: 23,
             beyondTested: true,
         });
     });

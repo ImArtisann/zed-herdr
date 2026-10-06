@@ -2,7 +2,7 @@
 
 ## Start here
 
-This contributor reference documents the supported boundary: Bun on macOS or Linux, HerdR 0.7.3 or newer reporting protocol 16 or newer, Git, and Zed through its public CLI. Compatibility is tested through HerdR protocol 19. The root [operator runbook](../README.md) remains the canonical guide for installation, configuration, health checks, troubleshooting, and removal. Use the [compact contributor checklist](../AGENTS.md) for repository conventions and safety invariants.
+This contributor reference documents the supported boundary: Bun on macOS or Linux, HerdR 0.7.3 or newer reporting protocol 16 or newer, Git, and Zed through its public CLI. Compatibility is tested through HerdR protocol 22 (HerdR 0.9.3). The root [operator runbook](../README.md) remains the canonical guide for installation, configuration, health checks, troubleshooting, and removal. Use the [compact contributor checklist](../AGENTS.md) for repository conventions and safety invariants.
 
 For a first architecture pass, read [Architecture](architecture.md), [Domain model](domain.md), and [Service ports](services.md), then continue into the subsystem pages that own the behavior you are changing.
 

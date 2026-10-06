@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`zed-herdr` is a private Bun/TypeScript application that keeps the active HerdR workspace available in an existing Zed session. HerdR socket protocol 16 or newer is authoritative for workspace state, with compatibility tested through protocol 19. The daemon consumes read-only HerdR snapshots/events and plugin cwd hints, resolves Git roots, then invokes only Zed's supported `zed -e <absolute-git-root>` command. It must not inspect Zed databases, replace windows, kill processes, or mutate existing HerdR panes.
+`zed-herdr` is a private Bun/TypeScript application that keeps the active HerdR workspace available in an existing Zed session. HerdR socket protocol 16 or newer is authoritative for workspace state, with compatibility tested through protocol 22 (HerdR 0.9.3). The daemon consumes read-only HerdR snapshots/events and plugin cwd hints, resolves Git roots, then invokes only Zed's supported `zed -e <absolute-git-root>` command. It must not inspect Zed databases, replace windows, kill processes, or mutate existing HerdR panes.
 
 Supported hosts are macOS and Linux with Bun, Git, HerdR `>=0.7.3` reporting protocol `>=16`, and the Zed CLI.
 
