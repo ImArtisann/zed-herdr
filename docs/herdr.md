@@ -7,7 +7,7 @@
 The HerdR adapter turns read-only observations from HerdR 0.7.3 or newer into the
 [`WorkspaceSource`](services.md) consumed by the editor-independent core.
 `MINIMUM_HERDR_PROTOCOL` is `16`; compatibility is tested through
-`HIGHEST_TESTED_HERDR_PROTOCOL` `19`. Socket-path precedence remains canonical in the root
+`HIGHEST_TESTED_HERDR_PROTOCOL` `22`. Socket-path precedence remains canonical in the root
 [configuration and behavior](../README.md#configuration-and-behavior) runbook.
 
 ## Responsibilities
@@ -32,7 +32,8 @@ The base subscription set for protocols 16 through 18 is:
 Protocol 19 adds `workspace.metadata_updated` and `workspace.reordered`. The selection is
 protocol-gated because HerdR rejects the entire `events.subscribe` request when any subscription
 type is unknown; sending the protocol-19 names to HerdR 0.7.3 would prevent the generation from
-becoming live.
+becoming live. Protocols 20 through 22 receive the protocol-19 set; HerdR 0.9.3 adds no workspace
+or worktree subscription types.
 
 No HerdR mutation is sent. Snapshot schemas decode only the protocol, workspace fields, and focus
 identifier consumed by the core projection. Unknown transport fields are discarded. Recognized
@@ -94,7 +95,7 @@ publication.
 
 Protocols below 16 fail as `UnsupportedHerdRProtocol`, log `herdr_protocol_unsupported`, and
 terminate the client run loop without reconnecting. Newer protocols are accepted. A value above
-protocol 19 logs `herdr_protocol_beyond_tested` once and sets `beyondTested` in health. Other source
+protocol 22 logs `herdr_protocol_beyond_tested` once and sets `beyondTested` in health. Other source
 failures remain typed as transport, protocol, or stale-generation errors and retain reconnect
 behavior.
 

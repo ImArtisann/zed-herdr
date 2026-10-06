@@ -2,7 +2,7 @@
 
 [![Plugin Demo](https://img.youtube.com/vi/Q_i-IKda7hE/maxresdefault.jpg)](https://youtu.be/Q_i-IKda7hE)
 
-HerdR plugin `artisann.zed-herdr` keeps the active HerdR workspace available in Zed without taking ownership of either application. It supports macOS and Linux, HerdR **0.7.3+** reporting protocol **16 or newer** (tested through protocol **19**), Bun, Git, and Zed with its `zed` CLI available.
+HerdR plugin `artisann.zed-herdr` keeps the active HerdR workspace available in Zed without taking ownership of either application. It supports macOS and Linux, HerdR **0.7.3+** reporting protocol **16 or newer** (tested through protocol **22**, HerdR 0.9.3), Bun, Git, and Zed with its `zed` CLI available.
 
 For contributor architecture and subsystem internals, see [the documentation index](docs/README.md).
 
@@ -48,13 +48,13 @@ A successful response is JSON shaped like:
         "paneId": "<pane-id>",
         "pid": 1234,
         "startedAt": "2026-01-01T00:00:00.000Z",
-        "protocol": 19,
+        "protocol": 22,
         "beyondTested": false
     }
 }
 ```
 
-`identity` identifies this plugin's owner-validated local daemon, `paneId` is the plugin pane that hosts it (or `null` when not injected by HerdR), and `pid`/`startedAt` identify that daemon instance. `protocol` is the last protocol accepted from HerdR, or `null` before negotiation; `beyondTested` is true when it is newer than protocol 19. Exit status `1` means no valid matching daemon answered; it does not start one.
+`identity` identifies this plugin's owner-validated local daemon, `paneId` is the plugin pane that hosts it (or `null` when not injected by HerdR), and `pid`/`startedAt` identify that daemon instance. `protocol` is the last protocol accepted from HerdR, or `null` before negotiation; `beyondTested` is true when it is newer than protocol 22. Exit status `1` means no valid matching daemon answered; it does not start one.
 
 Use the plugin registry and plugin log to inspect the installation:
 
